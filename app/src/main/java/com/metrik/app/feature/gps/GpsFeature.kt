@@ -42,6 +42,8 @@ import com.metrik.app.domain.GpsSample
 import com.metrik.app.domain.LocalSurvey
 import com.metrik.app.domain.SurveyMode
 import com.metrik.app.gps.GpsMath
+import com.metrik.app.gps.GpsTrackFilter
+import com.metrik.app.gps.PdrGpsFusion
 import com.metrik.app.gps.LocationSource
 import com.metrik.app.gps.Transport
 import com.metrik.app.ui.components.ErrorBanner
@@ -51,6 +53,7 @@ import com.metrik.app.ui.components.StatRow
 import com.metrik.app.ui.components.m
 import com.metrik.app.ui.components.m2
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -71,6 +74,10 @@ data class GpsUiState(
     val error: String? = null,
     val transport: String = "walk",
     val discarded: Int = 0,
+    /** Recorrido a pie con pasos + brújula (el GPS corrige). */
+    val usingSteps: Boolean = false,
+    val steps: Int = 0,
+    val gpsCorrections: Int = 0,
 )
 
 /** Medición exterior con GPS (CU-02): calibración condicional, recorrido y área (RF-08, RF-09). */
@@ -79,7 +86,17 @@ class GpsViewModel(
     private val location: LocationSource,
     private val surveys: SurveyRepository,
     private val calibrationTarget: Int = 15,
+    /**
+     * Pasos con brújula (rumbo absoluto en radianes por paso). A pie, el recorrido se arma con ellos
+     * y el GPS solo corrige (ver [PdrGpsFusion]). Null = solo GPS.
+     */
+    private val compassSteps: Flow<Double>? = null,
+    /** Largo de paso calibrado (Calibración → pasos). */
+    private val stepLengthM: Double = 0.70,
+    private val nanoClock: () -> Long = System::nanoTime,
+    private val wallClockS: () -> Double = { System.currentTimeMillis() / 1000.0 },
 ) : ViewModel() {
+    private var lastStepNs: Long? = null
     private val _state = MutableStateFlow(GpsUiState())
     val state: StateFlow<GpsUiState> = _state
     private var job: Job? = null
@@ -107,18 +124,89 @@ class GpsViewModel(
 
     fun startRecording() {
         job?.cancel()
-        _state.update { it.copy(phase = GpsPhase.RECORDING, samples = emptyList(), track = emptyList(), error = null, discarded = 0) }
         val profile = Transport.of(_state.value.transport)
+        val filter = GpsTrackFilter(profile)
+        // Punto de partida = centro de las lecturas de calibración (la persona estaba quieta en el inicio).
+        // Antes no se usaban: el punto de partida no aparecía hasta la primera lectura precisa en marcha.
+        val start = GpsMath.startPoint(calibration)?.takeIf { it.accuracyM <= profile.maxAccuracyM }
+        start?.let(filter::seed)
+        val initial = listOfNotNull(start)
+        _state.update {
+            it.copy(
+                phase = GpsPhase.RECORDING, samples = initial,
+                track = if (initial.isEmpty()) emptyList() else GpsMath.toEnu(initial), error = null, discarded = 0,
+            )
+        }
+        lastStepNs = null
+        // A pie con brújula: pasos + brújula corregidos con GPS. En bici, moto o carro no hay pasos: solo GPS.
+        val compass = compassSteps
+        if (compass != null && profile.key == "walk") {
+            recordWithSteps(profile, start, compass)
+            return
+        }
         job = viewModelScope.launch {
             location.samples.collect { s ->
-                if (!Transport.accept(profile, _state.value.samples.lastOrNull(), s)) {
+                val accepted = filter.offer(s)
+                if (accepted.isEmpty()) {
                     _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
                     return@collect
                 }
-                val samples = _state.value.samples + s
+                val samples = _state.value.samples + accepted
                 _state.update {
                     it.copy(samples = samples, lastAccuracyM = s.accuracyM, track = GpsMath.toEnu(samples))
                 }
+            }
+        }
+    }
+
+    /**
+     * Recorrido a pie: cada paso agrega un punto (línea continua, sigue la caminata) y el GPS corrige
+     * la deriva de los pasos. Quieto no hay pasos y el GPS tampoco mueve la posición.
+     */
+    private fun recordWithSteps(profile: com.metrik.app.gps.TransportProfile, start: GpsSample?, compass: Flow<Double>) {
+        var origin: GpsSample? = start
+        var fusion: PdrGpsFusion? = start?.let { PdrGpsFusion(stepLengthM, it.accuracyM) }
+        val times = mutableListOf<Double>().apply { start?.let { add(it.timestampS) } }
+        // El ajuste con GPS corrige la figura entera: se rehace la lista de puntos completa
+        fun publish(f: PdrGpsFusion, o: GpsSample, extra: (GpsUiState) -> GpsUiState) {
+            val samples = f.track().mapIndexed { i, p ->
+                if (i == 0) o else GpsMath.fromEnu(p, o.lat, o.lon, STEP_POINT_ACCURACY_M, times.getOrElse(i) { wallClockS() })
+            }
+            _state.update { extra(it.copy(samples = samples, track = GpsMath.toEnu(samples))) }
+        }
+        _state.update { it.copy(usingSteps = true, steps = 0, gpsCorrections = 0) }
+        job = viewModelScope.launch {
+            launch {
+                compass.collect { headingRad ->
+                    val f = fusion ?: return@collect // sin punto de partida todavía: se espera el primer GPS
+                    val o = origin ?: return@collect
+                    lastStepNs = nanoClock()
+                    f.onStep(headingRad)
+                    times += wallClockS()
+                    publish(f, o) { it.copy(steps = it.steps + 1) }
+                }
+            }
+            location.samples.collect { s ->
+                if (s.accuracyM > profile.maxAccuracyM) {
+                    _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
+                    return@collect
+                }
+                val o = origin
+                val f = fusion
+                if (o == null || f == null) {
+                    // Sin calibración válida: la primera lectura precisa es el punto de partida
+                    origin = s
+                    fusion = PdrGpsFusion(stepLengthM, s.accuracyM)
+                    times.clear(); times += s.timestampS
+                    _state.update { it.copy(samples = listOf(s), track = GpsMath.toEnu(listOf(s)), lastAccuracyM = s.accuracyM) }
+                    return@collect
+                }
+                // Quieto (sin pasos recientes): el GPS "pasea" y no debe mover la posición
+                val walking = lastStepNs?.let { nanoClock() - it < STEP_WINDOW_NS } == true
+                if (!walking) { _state.update { it.copy(lastAccuracyM = s.accuracyM) }; return@collect }
+                val used = f.onGps(GpsMath.toEnu(listOf(s), o.lat, o.lon).first(), s.accuracyM)
+                if (used) publish(f, o) { it.copy(gpsCorrections = it.gpsCorrections + 1, lastAccuracyM = s.accuracyM) }
+                else _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
             }
         }
     }
@@ -155,6 +243,16 @@ class GpsViewModel(
     }
 
     override fun onCleared() { job?.cancel() }
+
+    private companion object {
+        const val STEP_WINDOW_NS = 3_000_000_000L // sin pasos en 3 s = quieto
+        /**
+         * Precisión que se guarda en los puntos por pasos: es la del trazo (un paso), no la absoluta.
+         * El suavizado del área usa 2 × la mediana como tolerancia: con la del GPS (4–8 m) borraría
+         * las esquinas de un terreno chico.
+         */
+        const val STEP_POINT_ACCURACY_M = 0.5
+    }
 }
 
 @Composable
@@ -170,7 +268,13 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
 
     Scaffold(topBar = { MetrikTopBar("Medir terreno (GPS)", onBack = onBack) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Card(Modifier.fillMaxWidth().weight(1f)) { PlanDrawing(track = s.track, polygon = s.polygon) }
+            Card(Modifier.fillMaxWidth().weight(1f)) {
+                // Punto actual visible desde el inicio (el de partida sale de la calibración)
+                PlanDrawing(
+                    track = s.track, polygon = s.polygon,
+                    current = if (s.phase == GpsPhase.RECORDING) s.track.lastOrNull() else null,
+                )
+            }
             ErrorBanner(if (!granted) "Se necesita permiso de ubicación" else s.error)
             s.lastAccuracyM?.let { StatRow("Precisión actual", it.m(1)) }
             when (s.phase) {
@@ -188,7 +292,7 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                         style = MaterialTheme.typography.bodySmall)
                     Text(
                         "El GPS tiene un error de 3 a 15 m: úsalo para terrenos grandes, no para un aula. " +
-                            "Primero quédate quieto unos segundos para medir el error.",
+                            "Primero quédate quieto EN EL PUNTO DE PARTIDA unos segundos: mide el error y fija el inicio del recorrido.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Button(onClick = vm::calibrate, enabled = granted, modifier = Modifier.fillMaxWidth().testTag("gps_calibrate")) {
@@ -215,9 +319,16 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                     }
                 }
                 GpsPhase.RECORDING -> {
-                    StatRow("Lecturas (${Transport.of(s.transport).label})", s.samples.size.toString())
-                    if (s.discarded > 0) StatRow("Descartadas (saltos o baja precisión)", s.discarded.toString())
-                    Text("Camina por el borde del terreno y vuelve al punto de inicio.")
+                    if (s.usingSteps) {
+                        StatRow("Pasos (brújula)", s.steps.toString())
+                        StatRow("Correcciones GPS", s.gpsCorrections.toString())
+                        if (s.discarded > 0) StatRow("GPS ignorado (rebotes o baja precisión)", s.discarded.toString())
+                        Text("Camina por el borde del terreno con el celular en la mano, apuntando hacia donde caminas, y vuelve al punto de inicio.")
+                    } else {
+                        StatRow("Lecturas (${Transport.of(s.transport).label})", s.samples.size.toString())
+                        if (s.discarded > 0) StatRow("Descartadas (saltos o baja precisión)", s.discarded.toString())
+                        Text("Recorre el borde del terreno y vuelve al punto de inicio.")
+                    }
                     Button(onClick = vm::finish, modifier = Modifier.fillMaxWidth().testTag("gps_finish")) { Text("Finalizar") }
                 }
                 GpsPhase.FINISHED -> {

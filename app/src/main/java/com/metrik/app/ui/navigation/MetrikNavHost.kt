@@ -18,6 +18,7 @@ import com.metrik.app.feature.calibration.CalibrationScreen
 import com.metrik.app.feature.calibration.CalibrationViewModel
 import com.metrik.app.feature.validation.GpsReferenceScreen
 import com.metrik.app.feature.validation.GpsReferenceViewModel
+import com.metrik.app.sensors.compassSteps
 import com.metrik.app.sensors.stepEvents
 import com.metrik.app.feature.dashboard.DashboardScreen
 import com.metrik.app.feature.dashboard.DashboardViewModel
@@ -121,7 +122,12 @@ fun MetrikNavHost(container: AppContainer) {
         }
         composable(Routes.GPS, arguments = listOf(navArgument("projectId") { type = NavType.IntType })) { entry ->
             val projectId = entry.arguments!!.getInt("projectId")
-            val vm = viewModel { GpsViewModel(projectId, container.location, container.surveys) }
+            val vm = viewModel {
+                GpsViewModel(
+                    projectId, container.location, container.surveys,
+                    compassSteps = compassSteps(context), stepLengthM = container.session.session.value.stepLengthM,
+                )
+            }
             GpsScreen(
                 vm, onBack = { nav.popBackStack() },
                 onSaved = { localId -> nav.navigate(Routes.plan(localId)) { popUpTo(Routes.GPS) { inclusive = true } } },

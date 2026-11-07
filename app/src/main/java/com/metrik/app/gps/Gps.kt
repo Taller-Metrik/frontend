@@ -77,9 +77,81 @@ object Transport {
     }
 }
 
+/**
+ * Filtro del recorrido GPS. Antes cada lectura se comparaba solo con la última aceptada: si esa
+ * era un rebote de la señal (multitrayecto en un edificio), todas las lecturas buenas siguientes
+ * parecían un "salto imposible" y el recorrido quedaba anclado en un punto donde la persona no estaba.
+ * Ahora, si llegan [recoverAfter] lecturas precisas y coherentes entre sí que contradicen al ancla,
+ * el ancla era el error y se acepta el tramo nuevo.
+ */
+class GpsTrackFilter(
+    private val profile: TransportProfile,
+    private val recoverAfter: Int = 3,
+    /**
+     * Avance mínimo para agregar un punto. Quieto, el GPS "pasea" varios metros aunque la persona
+     * no se mueva; sin este umbral esas lecturas se agregaban y el recorrido avanzaba solo.
+     * Se usa el mayor entre este valor y la precisión de la lectura: un movimiento menor que el
+     * error del GPS no se puede distinguir del "paseo" de la señal.
+     */
+    private val minMoveM: Double = 3.0,
+) {
+    private var anchor: GpsSample? = null
+    private val pending = mutableListOf<GpsSample>()
+
+    /** Punto de partida ya conocido (centro de la calibración). */
+    fun seed(start: GpsSample) { anchor = start }
+
+    /**
+     * Lecturas a agregar al recorrido: ninguna (descartada, quieto o en espera), una, o varias al
+     * recuperarse. [moving] = false cuando el acelerómetro dice que la persona no está caminando.
+     */
+    fun offer(s: GpsSample, moving: Boolean = true): List<GpsSample> {
+        if (s.accuracyM > profile.maxAccuracyM) return emptyList()
+        if (!moving) { pending.clear(); return emptyList() }
+        anchor?.let { a ->
+            if (GpsMath.haversine(a.lat, a.lon, s.lat, s.lon) < maxOf(minMoveM, s.accuracyM)) return emptyList()
+        }
+        if (Transport.accept(profile, anchor, s)) {
+            pending.clear()
+            anchor = s
+            return listOf(s)
+        }
+        // Contradice al ancla: se guarda en espera si es coherente con las otras en espera
+        if (pending.isNotEmpty() && !Transport.accept(profile, pending.last(), s)) pending.clear()
+        pending += s
+        if (pending.size < recoverAfter) return emptyList()
+        val recovered = pending.toList()
+        pending.clear()
+        anchor = recovered.last()
+        return recovered
+    }
+}
+
 /** Cálculos GPS en el celular (versión ligera de backend/app/services/gps.py). */
 object GpsMath {
     const val EARTH_RADIUS_M = 6_371_000.0
+
+    /**
+     * Punto de partida a partir de las lecturas de calibración (la persona estaba quieta en el inicio):
+     * promedio ponderado por 1/precisión², mucho más estable que una lectura suelta. Su precisión es
+     * la mejor de las lecturas. Null si no hay lecturas.
+     */
+    fun startPoint(calibration: List<GpsSample>): GpsSample? {
+        if (calibration.isEmpty()) return null
+        var wSum = 0.0; var lat = 0.0; var lon = 0.0
+        for (s in calibration) {
+            val w = 1.0 / maxOf(s.accuracyM, 0.5).let { it * it }
+            wSum += w; lat += s.lat * w; lon += s.lon * w
+        }
+        return GpsSample(lat / wSum, lon / wSum, calibration.minOf { it.accuracyM }, calibration.maxOf { it.timestampS })
+    }
+
+    /** Inversa de [toEnu]: punto local (x = este, y = norte, en m) → latitud/longitud. */
+    fun fromEnu(p: Point, originLat: Double, originLon: Double, accuracyM: Double, timestampS: Double): GpsSample {
+        val lat = originLat + Math.toDegrees(p.y / EARTH_RADIUS_M)
+        val lon = originLon + Math.toDegrees(p.x / (EARTH_RADIUS_M * cos(Math.toRadians(originLat))))
+        return GpsSample(lat, lon, accuracyM, timestampS)
+    }
 
     fun haversine(aLat: Double, aLon: Double, bLat: Double, bLon: Double): Double {
         val lat1 = Math.toRadians(aLat)

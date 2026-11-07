@@ -158,6 +158,48 @@ class ViewModelsTest {
 
     @Test
     @Evidencia(
+        id = "FU-42", nombre = "GPS a pie en el ViewModel: quieto no avanza, caminando dibuja cada paso", requisito = "RF-08",
+        objetivo = "Verificar con el ViewModel completo que sin pasos el GPS que pasea no mueve el recorrido y que cada paso con brújula agrega un punto.",
+        entrada = "Calibración de 15 lecturas en el origen; A) 30 lecturas paseando ±3 m sin pasos; B) 10 pasos al norte de 0,70 m sin GPS",
+        esperado = "A) 1 punto (la partida), 0 correcciones; B) 11 puntos, el último a 7,0 m al norte",
+    )
+    fun gpsAPieConPasos() = runBlocking {
+        val lat0 = -8.13
+        val lon0 = -79.04
+        fun at(x: Double, y: Double, t: Double) =
+            GpsSample(lat0 + Math.toDegrees(y / 6_371_000.0), lon0 + Math.toDegrees(x / (6_371_000.0 * cos(Math.toRadians(lat0)))), 4.0, t)
+        var calibrated = false
+        var pasos = 0
+        val source = object : LocationSource {
+            override val samples = flow {
+                if (!calibrated) repeat(15) { emit(at(0.0, 0.0, it.toDouble())) }
+                else repeat(30) { emit(at(3.0 * kotlin.math.sin(it * 0.7), 3.0 * cos(it * 0.4), 20.0 + it)) }
+            }
+        }
+        val brujula = flow { repeat(pasos) { emit(0.0) } } // 0 rad = norte
+        // A) quieto
+        val vmA = GpsViewModel(1, source, FakeSurveyRepository(), compassSteps = brujula, stepLengthM = 0.70)
+        vmA.calibrate(); calibrated = true; vmA.startRecording()
+        val quieto = vmA.state.value
+        // B) caminando 10 pasos al norte
+        calibrated = false; pasos = 10
+        val vmB = GpsViewModel(1, object : LocationSource {
+            override val samples = flow { if (!calibrated) repeat(15) { emit(at(0.0, 0.0, it.toDouble())) } }
+        }, FakeSurveyRepository(), compassSteps = brujula, stepLengthM = 0.70)
+        vmB.calibrate(); calibrated = true; vmB.startRecording()
+        val caminando = vmB.state.value
+        val ultimo = caminando.track.last()
+        ev.obtenido = "A) puntos=${quieto.track.size}, correcciones=${quieto.gpsCorrections}; " +
+            "B) puntos=${caminando.track.size}, último=(${"%.2f".format(ultimo.x)}; ${"%.2f".format(ultimo.y)})"
+        assertEquals(1, quieto.track.size)
+        assertEquals(0, quieto.gpsCorrections)
+        assertEquals(11, caminando.track.size)
+        assertEquals(7.0, ultimo.y, 0.01)
+        assertEquals(0.0, ultimo.x, 0.01)
+    }
+
+    @Test
+    @Evidencia(
         id = "FU-21", nombre = "Plano: medidas en papel y nombre del DXF", requisito = "RF-10, RF-12",
         entrada = "Aula 5×4 m guardada; escala 1:50 → 1:100; nombre 'Aula Ñandú 2'",
         esperado = "1:50 → [100, 80, 100, 80] mm; 1:100 → [50, 40, 50, 40] mm; archivo metrik_aula_nandu_2_1-100.dxf",
