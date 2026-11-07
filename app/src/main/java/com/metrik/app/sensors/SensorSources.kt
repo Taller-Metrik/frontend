@@ -10,6 +10,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -90,6 +91,53 @@ class ArOdometrySource : OdometrySource {
     private val flow = MutableSharedFlow<OdometrySample>(extraBufferCapacity = 64)
     override val samples: Flow<OdometrySample> = flow
     fun emit(sample: OdometrySample) { flow.tryEmit(sample) }
+}
+
+/**
+ * Pasos con brújula para el modo GPS a pie: un evento por paso con el rumbo absoluto en radianes
+ * (0 = norte, π/2 = este). Usa TYPE_ROTATION_VECTOR (con magnetómetro: norte real, necesario para
+ * combinar con el GPS), no el GAME_ROTATION_VECTOR del modo interior, que no conoce el norte.
+ */
+fun compassSteps(context: Context): Flow<Double> = callbackFlow {
+    val manager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    val accel = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    val rotationSensor = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    if (accel == null || rotationSensor == null) { close(); return@callbackFlow }
+    val detector = StepDetector()
+    val rotation = FloatArray(9)
+    var heading: Double? = null
+    val listener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            when (event.sensor.type) {
+                Sensor.TYPE_ACCELEROMETER -> {
+                    val v = event.values
+                    if (detector.onAcceleration(v[0].toDouble(), v[1].toDouble(), v[2].toDouble(), event.timestamp)) {
+                        heading?.let { trySend(it) }
+                    }
+                }
+                else -> {
+                    SensorManager.getRotationMatrixFromVector(rotation, event.values)
+                    heading = walkingHeading(rotation)
+                }
+            }
+        }
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
+    manager.registerListener(listener, accel, SensorManager.SENSOR_DELAY_GAME)
+    manager.registerListener(listener, rotationSensor, SensorManager.SENSOR_DELAY_GAME)
+    awaitClose { manager.unregisterListener(listener) }
+}
+
+/**
+ * Rumbo hacia donde "mira" el celular, en el plano horizontal. La matriz lleva del celular al
+ * mundo (x = este, y = norte, z = arriba). Celular plano: manda su eje Y (borde superior);
+ * celular vertical: manda el eje −Z (la cámara trasera). Se usa el que esté más horizontal,
+ * así el rumbo no se vuelve inestable al cambiar la forma de sostenerlo.
+ */
+fun walkingHeading(r: FloatArray): Double {
+    val yE = r[1].toDouble(); val yN = r[4].toDouble()   // eje Y del celular en el mundo
+    val zE = -r[2].toDouble(); val zN = -r[5].toDouble() // eje −Z del celular en el mundo
+    return if (yE * yE + yN * yN >= zE * zE + zN * zN) atan2(yE, yN) else atan2(zE, zN)
 }
 
 /** Un evento por cada paso detectado con el acelerómetro (calibración del largo de paso). */
