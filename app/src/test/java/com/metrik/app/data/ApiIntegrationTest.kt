@@ -158,6 +158,22 @@ class ApiIntegrationTest {
 
     @Test
     @Evidencia(
+        id = "FI-11", nombre = "Descarga del informe técnico en PDF", requisito = "RF-28 (CU-10)",
+        entrada = "GET /surveys/55/report.pdf simulado",
+        esperado = "Ruta /api/v1/surveys/55/report.pdf y bytes del PDF recibidos completos",
+    )
+    fun informeTecnicoPdf() = runBlocking {
+        val pdf = "%PDF-1.4\n% MetriK\n%%EOF\n"
+        server.enqueue(MockResponse.Builder().code(200).addHeader("Content-Type", "application/pdf").body(pdf).build())
+        val bytes = DefaultPlanRepository(api).reportPdf(55)
+        val req = server.takeRequest()
+        ev.obtenido = "${req.url.encodedPath} → ${bytes.size} bytes"
+        assertTrue(req.url.encodedPath.endsWith("/surveys/55/report.pdf"))
+        assertEquals(pdf, bytes.decodeToString())
+    }
+
+    @Test
+    @Evidencia(
         id = "FI-06", nombre = "Enviar lecturas de wincha", requisito = "RF-13, RF-14",
         entrada = "Muros {1:[4.0,4.001], 0:[5.0,5.002]} y área real 20",
         esperado = "PUT con muros ordenados por índice; reporte deserializado",
