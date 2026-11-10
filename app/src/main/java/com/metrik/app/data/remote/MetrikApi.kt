@@ -53,6 +53,10 @@ interface MetrikApi {
     @GET("surveys/{id}/report.pdf")
     suspend fun reportPdf(@Path("id") id: Int): ResponseBody
 
+    /** Metrado y presupuesto del cerco perimétrico (CU-09, RF-24, RF-27). */
+    @POST("surveys/{id}/fence")
+    suspend fun fence(@Path("id") id: Int, @Body body: FenceInDto): FenceOutDto
+
     @GET("surveys/{id}/ml")
     suspend fun ml(@Path("id") id: Int): MlAnalysisDto
 

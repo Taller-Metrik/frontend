@@ -41,6 +41,9 @@ class AppContainer(context: Context) {
     val projects: ProjectRepository by lazy { DefaultProjectRepository(api) }
     val surveys: SurveyRepository by lazy { DefaultSurveyRepository(api, database.surveyDao()) }
     val plans: PlanRepository by lazy { DefaultPlanRepository(api) }
+    val fences: com.metrik.app.data.repository.FenceRepository by lazy {
+        com.metrik.app.data.repository.DefaultFenceRepository(api)
+    }
     val validation: ValidationRepository by lazy { DefaultValidationRepository(api) }
     val calibrations: com.metrik.app.data.repository.CalibrationRepository by lazy {
         com.metrik.app.data.repository.DefaultCalibrationRepository(api)

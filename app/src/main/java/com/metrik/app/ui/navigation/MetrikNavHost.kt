@@ -30,6 +30,8 @@ import com.metrik.app.feature.measure.MeasureScreen
 import com.metrik.app.feature.measure.MeasureViewModel
 import com.metrik.app.feature.plan.PlanScreen
 import com.metrik.app.feature.plan.PlanViewModel
+import com.metrik.app.feature.fence.FenceScreen
+import com.metrik.app.feature.fence.FenceViewModel
 import com.metrik.app.feature.plan.mimeTypeFor
 import com.metrik.app.feature.plan.saveToDownloads
 import com.metrik.app.feature.projects.ProjectDetailScreen
@@ -54,6 +56,8 @@ object Routes {
     const val CALIBRATION = "calibration"
     const val GPS_REFERENCE = "gps-reference/{localId}"
     fun gpsReference(localId: Long) = "gps-reference/$localId"
+    const val FENCE = "fence/{localId}"
+    fun fence(localId: Long) = "fence/$localId"
 
     fun project(id: Int, name: String) = "project/$id/${Uri.encode(name)}"
     fun measure(projectId: Int) = "measure/$projectId"
@@ -144,7 +148,13 @@ fun MetrikNavHost(container: AppContainer) {
                 onValidate = { nav.navigate(Routes.validation(it)) },
                 onDashboard = { nav.navigate(Routes.dashboard(it)) },
                 onGpsReference = { nav.navigate(Routes.gpsReference(it)) },
+                onFence = { nav.navigate(Routes.fence(it)) },
             )
+        }
+        composable(Routes.FENCE, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
+            val localId = entry.arguments!!.getLong("localId")
+            val vm = viewModel { FenceViewModel(localId, container.surveys, container.fences) }
+            FenceScreen(vm, onBack = { nav.popBackStack() })
         }
         composable(Routes.VALIDATION, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
             val localId = entry.arguments!!.getLong("localId")

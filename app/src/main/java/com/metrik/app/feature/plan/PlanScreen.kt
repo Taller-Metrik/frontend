@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Fence
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Psychology
@@ -63,6 +64,7 @@ fun PlanScreen(
     onValidate: (Long) -> Unit,
     onDashboard: (Long) -> Unit = {},
     onGpsReference: (Long) -> Unit = {},
+    onFence: (Long) -> Unit = {},
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -177,6 +179,13 @@ fun PlanScreen(
                 onClick = vm::exportReport, enabled = !s.busy,
                 modifier = Modifier.fillMaxWidth().testTag("plan_report"),
             ) { Icon(Icons.Filled.Description, null); Spacer(Modifier.width(4.dp)); Text("Informe técnico (PDF)") }
+            // Cerco perimétrico (CU-09): solo para terrenos medidos con GPS
+            if (survey.mode == SurveyMode.EXTERIOR) {
+                OutlinedButton(
+                    onClick = { onFence(survey.id) }, enabled = !s.busy,
+                    modifier = Modifier.fillMaxWidth().testTag("plan_fence"),
+                ) { Icon(Icons.Filled.Fence, null); Spacer(Modifier.width(4.dp)); Text("Cerco perimétrico y presupuesto") }
+            }
         }
     }
 }
