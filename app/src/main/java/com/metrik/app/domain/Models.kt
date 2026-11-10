@@ -8,8 +8,21 @@ enum class SurveyMode(val api: String, val label: String) {
     EXTERIOR("exterior", "Exterior (GPS)"),
 }
 
+/**
+ * Lectura GPS. [satellites] y [cn0DbHz] describen la calidad de la señal (RF-20); [vertexId] marca las
+ * lecturas tomadas quieto sobre una esquina (stop-and-go, RF-18). Los tres son opcionales: los
+ * recorridos guardados antes de esta versión se siguen leyendo igual.
+ */
 @Serializable
-data class GpsSample(val lat: Double, val lon: Double, val accuracyM: Double, val timestampS: Double)
+data class GpsSample(
+    val lat: Double,
+    val lon: Double,
+    val accuracyM: Double,
+    val timestampS: Double,
+    val satellites: Int? = null,
+    val cn0DbHz: Double? = null,
+    val vertexId: Int? = null,
+)
 
 @Serializable
 data class CaptureInfo(val odometry: String, val trackingLossS: Double, val durationS: Double, val transport: String? = null)

@@ -13,6 +13,7 @@ import com.metrik.app.data.remote.RegisterRequest
 import com.metrik.app.data.remote.SurveyCreateDto
 import com.metrik.app.data.remote.SurveyDto
 import com.metrik.app.data.session.SessionStore
+import com.metrik.app.domain.GpsSample
 import com.metrik.app.domain.LocalSurvey
 import com.metrik.app.domain.SurveyMode
 import kotlinx.coroutines.flow.Flow
@@ -147,13 +148,16 @@ class DefaultSurveyRepository(private val api: ApiClient, private val dao: Surve
     }
 }
 
+/** Lectura GPS → JSON del backend. Los campos nulos no se envían (`explicitNulls = false`). */
+fun GpsSample.toDto() = GpsPointDto(lat, lon, accuracyM, timestampS, satellites, cn0DbHz, vertexId)
+
 fun LocalSurvey.toCreateDto(): SurveyCreateDto = SurveyCreateDto(
     name = name,
     mode = mode.api,
     deviceModel = listOfNotNull(Build.MANUFACTURER, Build.MODEL).joinToString(" ").trim().ifBlank { null },
     points = if (mode == SurveyMode.INTERIOR) points.map { listOf(it.x, it.y) } else emptyList(),
     corners = corners?.map { listOf(it.x, it.y) },
-    gpsPoints = gps?.map { GpsPointDto(it.lat, it.lon, it.accuracyM, it.timestampS) },
+    gpsPoints = gps?.map { it.toDto() },
     scaleDenominator = scaleDenominator,
     capture = if (mode == SurveyMode.INTERIOR) capture?.let { CaptureDto(it.odometry, it.trackingLossS, it.durationS) } else null,
     transport = if (mode == SurveyMode.EXTERIOR) capture?.transport ?: "walk" else null,

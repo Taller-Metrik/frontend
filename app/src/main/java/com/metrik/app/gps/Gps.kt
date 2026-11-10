@@ -2,7 +2,11 @@ package com.metrik.app.gps
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.location.GnssStatus
+import android.location.LocationManager
+import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -30,6 +34,19 @@ interface LocationSource {
 
 class FusedLocationSource(context: Context) : LocationSource {
     private val client = LocationServices.getFusedLocationProviderClient(context)
+    private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+    /** Última calidad de señal GNSS y cuándo llegó (ms de reloj monotónico). */
+    @Volatile private var quality: GnssQuality? = null
+    @Volatile private var qualityAtMs = 0L
+
+    private val gnssCallback = object : GnssStatus.Callback() {
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            val usedCn0 = (0 until status.satelliteCount).filter(status::usedInFix).map { status.getCn0DbHz(it).toDouble() }
+            quality = GnssQuality.fromUsedCn0(usedCn0)
+            qualityAtMs = SystemClock.elapsedRealtime()
+        }
+    }
 
     @SuppressLint("MissingPermission") // La pantalla solicita el permiso antes de recolectar
     override val samples: Flow<GpsSample> = callbackFlow {
@@ -38,13 +55,29 @@ class FusedLocationSource(context: Context) : LocationSource {
             .build()
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
+                // Solo se adjunta la calidad GNSS si es reciente: si la posición vino de Wi-Fi o de la
+                // red celular (sin GNSS), no hay datos de satélites y se envían nulos
+                val q = quality?.takeIf { SystemClock.elapsedRealtime() - qualityAtMs < GNSS_STATUS_MAX_AGE_MS }
                 for (l in result.locations) {
-                    trySend(GpsSample(l.latitude, l.longitude, l.accuracy.toDouble(), l.time / 1000.0))
+                    trySend(
+                        GpsSample(
+                            l.latitude, l.longitude, l.accuracy.toDouble(), l.time / 1000.0,
+                            satellites = q?.satellites, cn0DbHz = q?.cn0DbHz,
+                        ),
+                    )
                 }
             }
         }
+        locationManager.registerGnssStatusCallback(gnssCallback, Handler(Looper.getMainLooper()))
         client.requestLocationUpdates(request, callback, Looper.getMainLooper())
-        awaitClose { client.removeLocationUpdates(callback) }
+        awaitClose {
+            client.removeLocationUpdates(callback)
+            locationManager.unregisterGnssStatusCallback(gnssCallback)
+        }
+    }
+
+    private companion object {
+        const val GNSS_STATUS_MAX_AGE_MS = 5_000L
     }
 }
 
