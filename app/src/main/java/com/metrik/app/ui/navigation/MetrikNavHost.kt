@@ -30,6 +30,7 @@ import com.metrik.app.feature.measure.MeasureScreen
 import com.metrik.app.feature.measure.MeasureViewModel
 import com.metrik.app.feature.plan.PlanScreen
 import com.metrik.app.feature.plan.PlanViewModel
+import com.metrik.app.feature.plan.mimeTypeFor
 import com.metrik.app.feature.plan.saveToDownloads
 import com.metrik.app.feature.projects.ProjectDetailScreen
 import com.metrik.app.feature.projects.ProjectDetailViewModel
@@ -136,7 +137,7 @@ fun MetrikNavHost(container: AppContainer) {
         composable(Routes.PLAN, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
             val localId = entry.arguments!!.getLong("localId")
             val vm = viewModel {
-                PlanViewModel(localId, container.surveys, container.plans) { name, bytes -> saveToDownloads(context, name, bytes) }
+                PlanViewModel(localId, container.surveys, container.plans) { name, bytes -> saveToDownloads(context, name, bytes, mimeTypeFor(name)) }
             }
             PlanScreen(
                 vm, onBack = { nav.popBackStack() },

@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.runtime.setValue
@@ -171,6 +172,11 @@ fun PlanScreen(
                     Icon(Icons.Filled.Rule, null); Spacer(Modifier.width(4.dp)); Text(if (survey.mode == SurveyMode.EXTERIOR) "Validar con referencia" else "Medir con wincha")
                 }
             }
+            // Informe técnico en PDF (CU-10): datos, método, plano, resultados con incertidumbre y validación
+            OutlinedButton(
+                onClick = vm::exportReport, enabled = !s.busy,
+                modifier = Modifier.fillMaxWidth().testTag("plan_report"),
+            ) { Icon(Icons.Filled.Description, null); Spacer(Modifier.width(4.dp)); Text("Informe técnico (PDF)") }
         }
     }
 }

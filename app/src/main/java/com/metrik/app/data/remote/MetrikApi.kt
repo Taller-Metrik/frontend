@@ -48,6 +48,11 @@ interface MetrikApi {
     @GET("surveys/{id}/export/dxf")
     suspend fun exportDxf(@Path("id") id: Int, @Query("scale") scale: Int?): ResponseBody
 
+    /** Informe técnico de la medición en PDF (CU-10, RF-28). */
+    @Streaming
+    @GET("surveys/{id}/report.pdf")
+    suspend fun reportPdf(@Path("id") id: Int): ResponseBody
+
     @GET("surveys/{id}/ml")
     suspend fun ml(@Path("id") id: Int): MlAnalysisDto
 

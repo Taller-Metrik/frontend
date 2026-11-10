@@ -218,6 +218,7 @@ class DesignScreenshotsTest {
         tall()
         val plans = object : PlanRepository {
             override suspend fun exportDxf(remoteId: Int, scale: Int) = ByteArray(0)
+            override suspend fun reportPdf(remoteId: Int) = ByteArray(0)
             override suspend fun ml(remoteId: Int) = MlAnalysisDto(
                 0.93, true, "Recorrido confiable: puede usar las medidas",
                 listOf(WallCorrectionDto(0, 4.94, 5.0, 0.06), WallCorrectionDto(1, 3.95, 4.0, 0.05),
@@ -276,6 +277,7 @@ class DesignScreenshotsTest {
         tall()
         val plans = object : PlanRepository {
             override suspend fun exportDxf(remoteId: Int, scale: Int) = ByteArray(0)
+            override suspend fun reportPdf(remoteId: Int) = ByteArray(0)
             override suspend fun ml(remoteId: Int) = MlAnalysisDto(
                 0.93, true, "Recorrido confiable: puede usar las medidas",
                 listOf(WallCorrectionDto(0, 4.94, 4.99, 0.05), WallCorrectionDto(1, 3.95, 3.99, 0.04),

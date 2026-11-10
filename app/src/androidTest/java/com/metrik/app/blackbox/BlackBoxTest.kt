@@ -195,6 +195,7 @@ class BlackBoxTest {
     fun planEscala() {
         val noPlan = object : PlanRepository {
             override suspend fun exportDxf(remoteId: Int, scale: Int) = ByteArray(0)
+            override suspend fun reportPdf(remoteId: Int) = ByteArray(0)
             override suspend fun ml(remoteId: Int): MlAnalysisDto = error("no usado")
         }
         compose.setContent { MetrikTheme { PlanScreen(PlanViewModel(1, OneSurvey(), noPlan) { _, _ -> "" }, {}, {}) } }

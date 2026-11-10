@@ -82,6 +82,14 @@ class PlanViewModel(
         _state.update { it.copy(message = "DXF guardado en $where") }
     }
 
+    /** Informe técnico en PDF (CU-10): lo genera el servidor, así que primero se sincroniza el recorrido. */
+    fun exportReport() = runBusy {
+        val remoteId = ensureSynced()
+        val bytes = plans.reportPdf(remoteId)
+        val where = saveFile(reportFileName(_state.value.survey?.name ?: "plano"), bytes)
+        _state.update { it.copy(message = "Informe técnico guardado en $where") }
+    }
+
     fun analyzeMl() = runBusy {
         if (_state.value.survey?.mode != SurveyMode.INTERIOR) error("El análisis ML aplica a recorridos interiores")
         val remoteId = ensureSynced()
@@ -111,12 +119,23 @@ class PlanViewModel(
     }
 
     companion object {
-        fun dxfFileName(name: String, scale: Int): String {
+        fun dxfFileName(name: String, scale: Int) = "metrik_${slug(name)}_1-$scale.dxf"
+
+        fun reportFileName(name: String) = "metrik_informe_${slug(name)}.pdf"
+
+        /** Nombre seguro para archivo: sin tildes ni símbolos ("Aula Ñandú 2" → "aula_nandu_2"). */
+        private fun slug(name: String): String {
             val ascii = Normalizer.normalize(name, Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
-            val slug = ascii.replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').lowercase().ifBlank { "plano" }
-            return "metrik_${slug}_1-$scale.dxf"
+            return ascii.replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').lowercase().ifBlank { "plano" }
         }
     }
+}
+
+/** Tipo MIME según la extensión del archivo que se guarda en Descargas. */
+fun mimeTypeFor(fileName: String): String = when (fileName.substringAfterLast('.', "").lowercase()) {
+    "pdf" -> "application/pdf"
+    "csv" -> "text/csv"
+    else -> "application/dxf"
 }
 
 /** Guarda un archivo (DXF o diagnóstico) en Descargas (Android 10+) o en la carpeta de la app (versiones anteriores). */

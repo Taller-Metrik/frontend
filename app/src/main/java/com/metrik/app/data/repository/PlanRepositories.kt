@@ -9,15 +9,18 @@ import com.metrik.app.data.remote.ReferencesDto
 import com.metrik.app.data.remote.SurveyValidationDto
 import com.metrik.app.data.remote.WallReferenceDto
 
-/** Funciones del plano que requieren el backend: DXF y análisis ML (RF-04, RF-12, RF-15). */
+/** Funciones del plano que requieren el backend: DXF, análisis ML e informe técnico (RF-04, RF-12, RF-15, RF-28). */
 interface PlanRepository {
     suspend fun exportDxf(remoteId: Int, scale: Int): ByteArray
     suspend fun ml(remoteId: Int): MlAnalysisDto
+    /** Informe técnico de la medición en PDF (CU-10). */
+    suspend fun reportPdf(remoteId: Int): ByteArray
 }
 
 class DefaultPlanRepository(private val api: ApiClient) : PlanRepository {
     override suspend fun exportDxf(remoteId: Int, scale: Int): ByteArray = api.api().exportDxf(remoteId, scale).bytes()
     override suspend fun ml(remoteId: Int): MlAnalysisDto = api.api().ml(remoteId)
+    override suspend fun reportPdf(remoteId: Int): ByteArray = api.api().reportPdf(remoteId).bytes()
 }
 
 /** Medidas reales con wincha y margen de error (RF-13, RF-14). */

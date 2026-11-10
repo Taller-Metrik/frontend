@@ -215,6 +215,7 @@ class ViewModelsTest {
         )
         val noPlan = object : PlanRepository {
             override suspend fun exportDxf(remoteId: Int, scale: Int) = ByteArray(0)
+            override suspend fun reportPdf(remoteId: Int) = ByteArray(0)
             override suspend fun ml(remoteId: Int) = error("no usado")
         }
         val vm = PlanViewModel(id, repo, noPlan) { _, _ -> "" }
