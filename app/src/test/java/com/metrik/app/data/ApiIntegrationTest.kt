@@ -2,8 +2,11 @@ package com.metrik.app.data
 
 import com.metrik.app.core.geometry.Point
 import com.metrik.app.data.remote.ApiClient
+import com.metrik.app.data.remote.FenceInDto
+import com.metrik.app.data.remote.GateDto
 import com.metrik.app.data.remote.userMessage
 import com.metrik.app.data.repository.DefaultAuthRepository
+import com.metrik.app.data.repository.DefaultFenceRepository
 import com.metrik.app.data.repository.DefaultPlanRepository
 import com.metrik.app.data.repository.DefaultProjectRepository
 import com.metrik.app.data.repository.DefaultSurveyRepository
@@ -170,6 +173,32 @@ class ApiIntegrationTest {
         ev.obtenido = "${req.url.encodedPath} → ${bytes.size} bytes"
         assertTrue(req.url.encodedPath.endsWith("/surveys/55/report.pdf"))
         assertEquals(pdf, bytes.decodeToString())
+    }
+
+    @Test
+    @Evidencia(
+        id = "FI-12", nombre = "Metrado del cerco perimétrico por la API", requisito = "RF-27 (CU-09)",
+        entrada = "POST /surveys/55/fence con cerco de alambre y un portón; respuesta simulada con una partida y presupuesto",
+        esperado = "JSON con kind, gates[side, width_m] y prices; respuesta con U95, partida y total deserializados",
+    )
+    fun cercoPerimetrico() = runBlocking {
+        server.enqueue(json(200, """{"survey_id":55,"kind":"wire","perimeter_m":320.0,"perimeter_u95_m":9.6,"net_length_m":316.0,
+            "items":[{"key":"posts_total","description":"Postes en total","unit":"und","quantity":107,"min":106,"max":112,"purchase":112,"priceable":true}],
+            "assumptions":["Postes cada 3 m"],"notes":["Metrado referencial"],
+            "budget":{"lines":[],"direct_cost":2800.0,"overhead_pct":10.0,"overhead":280.0,"profit_pct":5.0,"profit":140.0,
+            "subtotal":3220.0,"igv_pct":18.0,"igv":579.6,"total":3799.6,"missing_prices":[],"currency":"PEN"}}"""))
+        val out = DefaultFenceRepository(api).calculate(
+            55, FenceInDto(kind = "wire", gates = listOf(GateDto(0, 4.0)), prices = mapOf("posts_total" to 25.0)),
+        )
+        val req = server.takeRequest()
+        val body = req.body!!.utf8()
+        ev.obtenido = "${req.method} ${req.url.encodedPath} $body → U95=${out.perimeterU95M}, total=${out.budget?.total}"
+        assertEquals("POST", req.method)
+        assertTrue(req.url.encodedPath.endsWith("/surveys/55/fence"))
+        assertTrue("\"kind\":\"wire\"" in body && "\"width_m\":4.0" in body && "\"posts_total\":25.0" in body)
+        assertEquals(9.6, out.perimeterU95M!!, 1e-9)
+        assertEquals(112.0, out.items.single().purchase, 1e-9)
+        assertEquals(3799.6, out.budget!!.total, 1e-9)
     }
 
     @Test
