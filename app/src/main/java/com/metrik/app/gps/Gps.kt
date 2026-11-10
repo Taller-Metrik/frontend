@@ -7,6 +7,7 @@ import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import java.util.concurrent.atomic.AtomicReference
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -36,20 +37,17 @@ class FusedLocationSource(context: Context) : LocationSource {
     private val client = LocationServices.getFusedLocationProviderClient(context)
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-    /** Última calidad de señal GNSS y cuándo llegó (ms de reloj monotónico). */
-    @Volatile private var quality: GnssQuality? = null
-    @Volatile private var qualityAtMs = 0L
-
-    private val gnssCallback = object : GnssStatus.Callback() {
-        override fun onSatelliteStatusChanged(status: GnssStatus) {
-            val usedCn0 = (0 until status.satelliteCount).filter(status::usedInFix).map { status.getCn0DbHz(it).toDouble() }
-            quality = GnssQuality.fromUsedCn0(usedCn0)
-            qualityAtMs = SystemClock.elapsedRealtime()
-        }
-    }
-
     @SuppressLint("MissingPermission") // La pantalla solicita el permiso antes de recolectar
     override val samples: Flow<GpsSample> = callbackFlow {
+        // Un callback GNSS por recolector: LocationManager identifica el registro por la instancia, así que
+        // uno compartido se daría de baja al terminar el recolector anterior (calibración → recorrido)
+        val latest = AtomicReference<Pair<GnssQuality, Long>?>(null) // calidad y cuándo llegó (elapsedRealtime)
+        val gnssCallback = object : GnssStatus.Callback() {
+            override fun onSatelliteStatusChanged(status: GnssStatus) {
+                val usedCn0 = (0 until status.satelliteCount).filter(status::usedInFix).map { status.getCn0DbHz(it).toDouble() }
+                latest.set(GnssQuality.fromUsedCn0(usedCn0) to SystemClock.elapsedRealtime())
+            }
+        }
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
             .setMinUpdateIntervalMillis(500L)
             .build()
@@ -57,7 +55,7 @@ class FusedLocationSource(context: Context) : LocationSource {
             override fun onLocationResult(result: LocationResult) {
                 // Solo se adjunta la calidad GNSS si es reciente: si la posición vino de Wi-Fi o de la
                 // red celular (sin GNSS), no hay datos de satélites y se envían nulos
-                val q = quality?.takeIf { SystemClock.elapsedRealtime() - qualityAtMs < GNSS_STATUS_MAX_AGE_MS }
+                val q = latest.get()?.takeIf { SystemClock.elapsedRealtime() - it.second < GNSS_STATUS_MAX_AGE_MS }?.first
                 for (l in result.locations) {
                     trySend(
                         GpsSample(
@@ -68,11 +66,14 @@ class FusedLocationSource(context: Context) : LocationSource {
                 }
             }
         }
-        locationManager.registerGnssStatusCallback(gnssCallback, Handler(Looper.getMainLooper()))
+        // Si no se puede leer el estado GNSS, la ubicación sigue funcionando (sin datos de señal)
+        val gnssRegistered = runCatching {
+            locationManager.registerGnssStatusCallback(gnssCallback, Handler(Looper.getMainLooper()))
+        }.getOrDefault(false)
         client.requestLocationUpdates(request, callback, Looper.getMainLooper())
         awaitClose {
             client.removeLocationUpdates(callback)
-            locationManager.unregisterGnssStatusCallback(gnssCallback)
+            if (gnssRegistered) locationManager.unregisterGnssStatusCallback(gnssCallback)
         }
     }
 
