@@ -5,6 +5,7 @@ import com.metrik.app.data.remote.BudgetDto
 import com.metrik.app.data.remote.FenceInDto
 import com.metrik.app.data.remote.FenceOutDto
 import com.metrik.app.data.remote.TakeoffItemDto
+import com.metrik.app.data.remote.missingLabels
 import com.metrik.app.data.repository.FenceRepository
 import com.metrik.app.domain.LocalSurvey
 import com.metrik.app.domain.SurveyMode
@@ -125,5 +126,48 @@ class FenceViewModelTest {
         ev.obtenido = "errores=($e1, $e2), peticiones=${fences.requests.size}"
         assertNotNull(e1); assertNotNull(e2)
         assertTrue(fences.requests.isEmpty())
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-59", nombre = "Metrado del cerco desactualizado", requisito = "RF-27",
+        objetivo = "Verificar que al cambiar un parámetro del cerco se borra el metrado anterior, que ya no corresponde.",
+        entrada = "Metrado calculado; luego hilos '6' y, tras recalcular, ancho de portón '3'",
+        esperado = "El resultado queda vacío después de cada cambio; los precios escritos se conservan",
+    )
+    fun metradoDesactualizado() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val fences = FakeFences()
+        val vm = FenceViewModel(terreno(repo), repo, fences)
+        withTimeout(5_000) { vm.state.first { it.survey != null } }
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        vm.setPrice("posts_total", "25")
+        vm.setStrands("6")
+        val tras1 = vm.state.value
+        vm.addGate()
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        vm.updateGate(0, side = 0, width = "3")
+        val tras2 = vm.state.value
+        ev.obtenido = "resultado tras hilos=${tras1.result}, tras portón=${tras2.result}, precios=${tras2.prices}"
+        assertNull(tras1.result)
+        assertNull(tras2.result)
+        assertEquals("25", tras2.prices["posts_total"])
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-61", nombre = "Partidas sin precio con su nombre", requisito = "RF-24",
+        objetivo = "Verificar que las partidas que quedaron fuera del presupuesto se muestran por su descripción.",
+        entrada = "Presupuesto con missing_prices=[wire_rolls, clave_desconocida]",
+        esperado = "[Rollos de alambre de 200 m, clave_desconocida]",
+    )
+    fun partidasSinPrecio() {
+        val items = listOf(TakeoffItemDto("wire_rolls", "Rollos de alambre de 200 m", "rollo", 7.0, 7.0, 7.0, 7.0, true))
+        val budget = BudgetDto(emptyList(), 0.0, 10.0, 0.0, 5.0, 0.0, 0.0, 18.0, 0.0, 0.0, listOf("wire_rolls", "clave_desconocida"))
+        val labels = budget.missingLabels(items)
+        ev.obtenido = labels.toString()
+        assertEquals(listOf("Rollos de alambre de 200 m", "clave_desconocida"), labels)
     }
 }
