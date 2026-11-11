@@ -10,11 +10,11 @@ import com.metrik.app.domain.LocalSurvey
 import com.metrik.app.domain.SurveyMode
 import com.metrik.app.feature.house.HouseViewModel
 import com.metrik.app.feature.measure.MeasureViewModel
-import com.metrik.app.sensors.SimulatedOdometrySource
 import com.metrik.app.testing.EvidenceRule
 import com.metrik.app.testing.Evidencia
 import com.metrik.app.testing.FakeSurveyRepository
 import com.metrik.app.testing.MainDispatcherRule
+import com.metrik.app.testing.SimulatedOdometrySource
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest

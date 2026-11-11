@@ -282,4 +282,22 @@ class ApiIntegrationTest {
         assertEquals(12.0, out.totalAreaM2, 1e-9)
         assertEquals(1, out.warnings.size)
     }
+
+    @Test
+    @Evidencia(
+        id = "FI-14", nombre = "Unión por puerta en el JSON del plano de vivienda", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar que una unión por puerta envía a_point y b_point y no envía los números de muro.",
+        entrada = "Unión Pasillo (41) ↔ Sala (42) con puertas (2; 1,2) y (2; 0)",
+        esperado = "JSON con a_point [2.0,1.2] y b_point [2.0,0.0], sin a_wall ni b_wall",
+    )
+    fun unionPorPuerta() = runBlocking {
+        server.enqueue(json(200, """{"project_id":7,"rooms":[],"total_area_m2":0.0,"warnings":[]}"""))
+        DefaultFloorPlanRepository(api).plan(
+            7, FloorPlanInDto(listOf(41, 42), listOf(FloorJoinDto(41, null, 42, null, 0.15, aPoint = listOf(2.0, 1.2), bPoint = listOf(2.0, 0.0)))),
+        )
+        val body = server.takeRequest().body!!.utf8()
+        ev.obtenido = body
+        assertTrue("\"a_point\":[2.0,1.2]" in body && "\"b_point\":[2.0,0.0]" in body)
+        assertTrue("a_wall" !in body && "b_wall" !in body)
+    }
 }
