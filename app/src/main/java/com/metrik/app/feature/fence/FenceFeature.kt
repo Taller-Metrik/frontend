@@ -34,6 +34,7 @@ import com.metrik.app.data.remote.FenceInDto
 import com.metrik.app.data.remote.FenceOutDto
 import com.metrik.app.data.remote.GateDto
 import com.metrik.app.data.remote.TakeoffItemDto
+import com.metrik.app.data.remote.missingLabels
 import com.metrik.app.data.remote.userMessage
 import com.metrik.app.data.repository.FenceRepository
 import com.metrik.app.data.repository.SurveyRepository
@@ -83,15 +84,18 @@ class FenceViewModel(
         }
     }
 
-    fun setKind(kind: String) = _state.update { it.copy(kind = kind, result = null) }
-    fun setStrands(v: String) = _state.update { it.copy(strands = v) }
-    fun setPostSpacing(v: String) = _state.update { it.copy(postSpacing = v) }
-    fun setWallHeight(v: String) = _state.update { it.copy(wallHeight = v) }
-    fun setColumnSpacing(v: String) = _state.update { it.copy(columnSpacing = v) }
-    fun addGate() = _state.update { it.copy(gates = it.gates + GateInput()) }
-    fun removeGate(i: Int) = _state.update { it.copy(gates = it.gates.filterIndexed { k, _ -> k != i }) }
+    // Cualquier cambio de los datos borra el metrado anterior: ya no corresponde (los precios escritos se conservan)
+    private fun edit(change: (FenceUiState) -> FenceUiState) = _state.update { change(it).copy(result = null) }
+
+    fun setKind(kind: String) = edit { it.copy(kind = kind) }
+    fun setStrands(v: String) = edit { it.copy(strands = v) }
+    fun setPostSpacing(v: String) = edit { it.copy(postSpacing = v) }
+    fun setWallHeight(v: String) = edit { it.copy(wallHeight = v) }
+    fun setColumnSpacing(v: String) = edit { it.copy(columnSpacing = v) }
+    fun addGate() = edit { it.copy(gates = it.gates + GateInput()) }
+    fun removeGate(i: Int) = edit { it.copy(gates = it.gates.filterIndexed { k, _ -> k != i }) }
     fun updateGate(i: Int, side: Int, width: String) =
-        _state.update { it.copy(gates = it.gates.mapIndexed { k, g -> if (k == i) GateInput(side, width) else g }) }
+        edit { it.copy(gates = it.gates.mapIndexed { k, g -> if (k == i) GateInput(side, width) else g }) }
     fun setPrice(key: String, text: String) = _state.update { it.copy(prices = it.prices + (key to text)) }
 
     /** Metrado sin presupuesto. */
@@ -258,7 +262,7 @@ private fun FenceResult(r: FenceOutDto, s: FenceUiState, vm: FenceViewModel) {
         StatRow("IGV (${b.igvPct.toInt()} %)", b.igv.soles())
         StatRow("Total", b.total.soles(), Modifier.testTag("fence_total"))
         if (b.missingPrices.isNotEmpty()) {
-            Text("Sin precio (no incluidas): ${b.missingPrices.size} partidas", style = MaterialTheme.typography.bodySmall)
+            Text("Sin precio (no incluidas): ${b.missingLabels(r.items).joinToString()}", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
