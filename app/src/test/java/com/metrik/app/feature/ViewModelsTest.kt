@@ -135,7 +135,7 @@ class ViewModelsTest {
                     for (i in 0..3) for (k in 0 until 40) {
                         val (x1, y1) = poly[i]
                         val (x2, y2) = poly[(i + 1) % 4]
-                        emit(at(x1 + (x2 - x1) * k / 40, y1 + (y2 - y1) * k / 40, k.toDouble()))
+                        emit(at(x1 + (x2 - x1) * k / 40, y1 + (y2 - y1) * k / 40, 100.0 + i * 40 + k)) // la hora avanza
                     }
                 }
             }
@@ -182,11 +182,14 @@ class ViewModelsTest {
         vmA.calibrate(); calibrated = true; vmA.startRecording()
         val quieto = vmA.state.value
         // B) caminando 10 pasos al norte
-        calibrated = false; pasos = 10
+        // La brújula es un sensor en vivo: queda encendida desde la precisión y los pasos llegan al caminar
+        calibrated = false
+        val brujulaEnVivo = kotlinx.coroutines.flow.MutableSharedFlow<Double>(extraBufferCapacity = 100)
         val vmB = GpsViewModel(1, object : LocationSource {
             override val samples = flow { if (!calibrated) repeat(15) { emit(at(0.0, 0.0, it.toDouble())) } }
-        }, FakeSurveyRepository(), compassSteps = brujula, stepLengthM = 0.70)
+        }, FakeSurveyRepository(), compassSteps = brujulaEnVivo, stepLengthM = 0.70)
         vmB.calibrate(); calibrated = true; vmB.startRecording()
+        repeat(10) { brujulaEnVivo.emit(0.0) }
         val caminando = vmB.state.value
         val ultimo = caminando.track.last()
         ev.obtenido = "A) puntos=${quieto.track.size}, correcciones=${quieto.gpsCorrections}; " +

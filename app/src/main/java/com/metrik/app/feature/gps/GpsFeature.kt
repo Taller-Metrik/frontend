@@ -58,6 +58,9 @@ import com.metrik.app.ui.components.m
 import com.metrik.app.ui.components.m2
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -127,6 +130,13 @@ class GpsViewModel(
     private val wallClockS: () -> Double = { System.currentTimeMillis() / 1000.0 },
 ) : ViewModel() {
     private var lastStepNs: Long? = null
+    /**
+     * La brújula se enciende una sola vez, al medir la precisión, y sigue encendida al grabar: así no empieza sin
+     * asentar justo cuando la persona empieza a caminar. Los pasos detectados mientras mide la precisión se ignoran.
+     */
+    private val compassFeed: SharedFlow<Double>? by lazy { compassSteps?.shareIn(viewModelScope, SharingStarted.Eagerly) }
+    /** Hora de la partida: una lectura anterior (guardada o atrasada) no entra al recorrido. */
+    private var startTimestampS = Double.NEGATIVE_INFINITY
     /** Aplica el ajuste completo de pasos + GPS al trazo (en pantalla se acerca de a poco); null = solo GPS. */
     private var settleSteps: (() -> Unit)? = null
     /** Lecturas quietas etiquetadas con su vértice (0 = partida al final, 1.. = esquinas); se guardan aparte del trazo. */
@@ -155,6 +165,8 @@ class GpsViewModel(
         diag.clear()
         diag.append(DIAG_HEADER).append('\n')
         _state.update { it.copy(phase = GpsPhase.CALIBRATING, calibrationSamples = 0, error = null) }
+        // A pie: la brújula se enciende ya, para que se asiente mientras la persona está quieta
+        if (Transport.of(_state.value.transport).key == "walk") compassFeed
         job = viewModelScope.launch {
             location.samples.collect { s ->
                 // Bajo techo o junto a una pared el error es de 10–20 m: esas lecturas no sirven para el punto de partida
@@ -239,6 +251,7 @@ class GpsViewModel(
         val start = GpsMath.startPoint(calibration)?.takeIf { it.accuracyM <= profile.maxAccuracyM }
         start?.let(filter::seed)
         val initial = listOfNotNull(start)
+        startTimestampS = (calibration.maxOfOrNull { it.timestampS } ?: Double.NEGATIVE_INFINITY)
         _state.update {
             it.copy(
                 phase = GpsPhase.RECORDING, samples = initial,
@@ -250,13 +263,14 @@ class GpsViewModel(
         lastStepNs = null
         log("inicio", start, note = "partida = centro de ${calibration.size} lecturas quietas")
         // A pie con brújula: pasos + brújula corregidos con GPS. En bici, moto o carro no hay pasos: solo GPS.
-        val compass = compassSteps
+        val compass = compassFeed
         if (compass != null && profile.key == "walk") {
             recordWithSteps(profile, start, compass)
             return
         }
         job = viewModelScope.launch {
             location.samples.collect { s ->
+                if (isStale(s)) return@collect
                 recordAccuracies += s.accuracyM
                 val accepted = filter.offer(s, moving = !GpsMath.isStill(s))
                 if (accepted.isEmpty()) {
@@ -315,6 +329,7 @@ class GpsViewModel(
                 }
             }
             location.samples.collect { s ->
+                if (isStale(s)) return@collect
                 recordAccuracies += s.accuracyM
                 val o = origin
                 val f = fusion
@@ -344,6 +359,14 @@ class GpsViewModel(
                 else _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
             }
         }
+    }
+
+    /** Lectura con hora anterior a la partida (ubicación guardada o atrasada): se descarta. */
+    private fun isStale(s: GpsSample): Boolean {
+        if (s.timestampS > startTimestampS) return false
+        log("gps", s, note = "vieja (anterior a la partida)")
+        _state.update { it.copy(discarded = it.discarded + 1) }
+        return true
     }
 
     /** Termina el recorrido en la partida: cierra la poligonal, corrige el recorrido y calcula el área. */

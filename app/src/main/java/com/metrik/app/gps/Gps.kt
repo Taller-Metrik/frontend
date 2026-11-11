@@ -48,8 +48,11 @@ class FusedLocationSource(context: Context) : LocationSource {
                 latest.set(GnssQuality.fromUsedCn0(usedCn0) to SystemClock.elapsedRealtime())
             }
         }
+        // Solo ubicaciones nuevas: sin la última guardada (puede ser de minutos atrás) y esperando la primera precisa
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
             .setMinUpdateIntervalMillis(500L)
+            .setMaxUpdateAgeMillis(0L)
+            .setWaitForAccurateLocation(true)
             .build()
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
@@ -57,6 +60,8 @@ class FusedLocationSource(context: Context) : LocationSource {
                 // red celular (sin GNSS), no hay datos de satélites y se envían nulos
                 val q = latest.get()?.takeIf { SystemClock.elapsedRealtime() - it.second < GNSS_STATUS_MAX_AGE_MS }?.first
                 for (l in result.locations) {
+                    // Una lectura atrasada (llegó tarde o en lote) ya no corresponde a donde está la persona
+                    if (SystemClock.elapsedRealtimeNanos() - l.elapsedRealtimeNanos > MAX_FIX_AGE_NS) continue
                     trySend(
                         GpsSample(
                             l.latitude, l.longitude, l.accuracy.toDouble(), l.time / 1000.0,
@@ -80,6 +85,8 @@ class FusedLocationSource(context: Context) : LocationSource {
 
     private companion object {
         const val GNSS_STATUS_MAX_AGE_MS = 5_000L
+        /** Antigüedad máxima de una lectura al llegar (2 s). */
+        const val MAX_FIX_AGE_NS = 2_000_000_000L
     }
 }
 
