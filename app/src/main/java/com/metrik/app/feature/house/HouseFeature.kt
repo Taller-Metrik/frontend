@@ -2,6 +2,12 @@ package com.metrik.app.feature.house
 
 import com.metrik.app.core.geometry.Point
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -94,6 +100,12 @@ data class HouseUiState(
     /** Ambientes elegidos, en orden: el primero es la base. */
     val selected: List<Long> = emptyList(),
     val joins: List<JoinInput> = emptyList(),
+    /** Posición de cada ambiente elegido en el panel interactivo. */
+    val poses: Map<Long, RoomPose> = emptyMap(),
+    /** Ambiente tocado por última vez (el que giran los botones). */
+    val active: Long? = null,
+    /** Espesor de los muros compartidos (m) para las uniones con imán. */
+    val thickness: String = "0.15",
     val result: FloorPlanOutDto? = null,
     val busy: Boolean = false,
     val error: String? = null,
@@ -147,7 +159,67 @@ class HouseViewModel(
     // Cambiar ambientes o uniones borra la planta anterior: ya no corresponde
     private fun edit(change: (HouseUiState) -> HouseUiState) = _state.update { change(it).copy(result = null, message = null) }
 
-    fun toggleRoom(id: Long) = edit { s -> s.copy(selected = if (id in s.selected) s.selected - id else s.selected + id) }
+    /**
+     * Elegir o quitar un ambiente. Al elegirlo aparece en el panel a la derecha de los demás (sin encimarse);
+     * al quitarlo se borran sus uniones.
+     */
+    fun toggleRoom(id: Long) = edit { s ->
+        if (id in s.selected) {
+            s.copy(
+                selected = s.selected - id, poses = s.poses - id, active = s.active.takeIf { it != id },
+                joins = s.joins.filter { it.a != id && it.b != id },
+            )
+        } else {
+            val room = s.room(id) ?: return@edit s
+            val right = s.selected.mapNotNull { other ->
+                val r = s.room(other) ?: return@mapNotNull null
+                HouseLayout.world(r.vertices, s.poses[other] ?: RoomPose()).maxOf { it.x }
+            }.maxOrNull()
+            val start = HouseLayout.initialPoses(listOf(room.vertices)).single()
+            val pose = if (right == null) start else start.copy(dx = start.dx + right + 1.0)
+            s.copy(selected = s.selected + id, poses = s.poses + (id to pose), active = id)
+        }
+    }
+
+    /** Arrastrar un ambiente en el panel ([dxM], [dyM] en metros). */
+    fun moveRoom(id: Long, dxM: Double, dyM: Double) = edit { s ->
+        val p = s.poses[id] ?: return@edit s
+        s.copy(poses = s.poses + (id to p.copy(dx = p.dx + dxM, dy = p.dy + dyM)), active = id)
+    }
+
+    /** Girar un ambiente alrededor de su centro. */
+    fun rotateRoom(id: Long, degrees: Double) = edit { s ->
+        val p = s.poses[id] ?: return@edit s
+        s.copy(poses = s.poses + (id to p.copy(rotRad = p.rotRad + Math.toRadians(degrees))), active = id)
+    }
+
+    fun setThickness(text: String) = edit { it.copy(thickness = text) }
+
+    /**
+     * Soltar un ambiente: si quedó cerca del muro de otro, el imán lo pega (paralelo, al espesor del muro) y se
+     * guarda la unión en ese punto, reemplazando la que hubiera entre los mismos dos ambientes.
+     */
+    fun dropRoom(id: Long) {
+        val s = _state.value
+        val ids = s.selected.filter { s.poses[it] != null && s.room(it) != null }
+        val moving = ids.indexOf(id)
+        if (moving < 0) return
+        val t = number(s.thickness)?.takeIf { it > 0 && it <= MAX_THICKNESS_M } ?: 0.15
+        val snap = HouseLayout.snap(moving, ids.map { s.room(it)!!.vertices }, ids.map { s.poses.getValue(it) }, t) ?: return
+        val other = ids[snap.aIndex]
+        val join = JoinInput(
+            a = other, b = id, thickness = s.thickness, aPoint = snap.aPointLocal, bPoint = snap.bPointLocal,
+            aWall = snap.aWall, bWall = snap.bWall,
+        )
+        edit {
+            it.copy(
+                poses = it.poses + (id to snap.pose),
+                joins = it.joins.filterNot { j -> setOf(j.a, j.b) == setOf(other, id) } + join,
+                active = id,
+            ).copy(message = null)
+        }
+        _state.update { it.copy(message = "«${s.room(id)?.name}» unido a «${s.room(other)?.name}»") }
+    }
 
     /** Nueva unión: por defecto la base con el primer ambiente elegido que todavía no está unido. */
     fun addJoin() {
@@ -276,7 +348,7 @@ fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit, onMeasureContour: () -> 
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            Text("El primero que elijas es la base; los demás se ubican pegados a él.", style = MaterialTheme.typography.bodySmall)
+            Text("Toca los ambientes que forman la vivienda: aparecen en el panel de abajo.", style = MaterialTheme.typography.bodySmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 s.rooms.forEach { r ->
                     val order = s.selected.indexOf(r.id)
@@ -290,15 +362,17 @@ fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit, onMeasureContour: () -> 
 
             ContourSection(s, vm.comparison(), onMeasureContour)
 
-            Text("Muros compartidos", style = MaterialTheme.typography.titleSmall)
+            Text("Arma la vivienda", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Arrastra cada ambiente con el dedo hasta pegarlo al otro: cuando un muro queda cerca, se pega solo (imán). " +
+                    "Toca un ambiente y usa los botones para girarlo.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (s.selected.isNotEmpty()) InteractivePanel(s, vm)
             if (vm.canAutoJoin) {
-                Button(onClick = vm::autoJoin, enabled = !s.busy, modifier = Modifier.fillMaxWidth().testTag("house_auto")) {
+                OutlinedButton(onClick = vm::autoJoin, enabled = !s.busy, modifier = Modifier.fillMaxWidth().testTag("house_auto")) {
                     Text("Unir automáticamente (por las puertas)")
                 }
-            }
-            s.joins.forEachIndexed { i, j -> JoinCard(i, j, s, vm) }
-            OutlinedButton(onClick = vm::addJoin, enabled = s.selected.size >= 2, modifier = Modifier.testTag("house_add_join")) {
-                Text("Unir dos ambientes")
             }
 
             Button(
@@ -338,6 +412,113 @@ private fun ContourSection(s: HouseUiState, c: ContourComparison?, onMeasure: ()
     }
     OutlinedButton(onClick = onMeasure, modifier = Modifier.fillMaxWidth().testTag("house_measure_contour")) {
         Text(if (c == null) "Medir contorno de la casa" else "Volver a medir el contorno")
+    }
+}
+
+/** Vista del panel: qué rectángulo del plano (en metros) se muestra. Se congela mientras se arrastra. */
+private data class PanelView(val minX: Double, val minY: Double, val spanM: Double)
+
+private fun panelView(s: HouseUiState): PanelView {
+    val pts = s.selected.flatMap { id -> s.room(id)?.let { HouseLayout.world(it.vertices, s.poses[id] ?: RoomPose()) }.orEmpty() }
+    if (pts.isEmpty()) return PanelView(0.0, 0.0, 10.0)
+    val minX = pts.minOf { it.x }
+    val maxX = pts.maxOf { it.x }
+    val minY = pts.minOf { it.y }
+    val maxY = pts.maxOf { it.y }
+    val span = maxOf(maxX - minX, maxY - minY, 4.0) * 1.35 // margen para poder mover los ambientes
+    return PanelView((minX + maxX) / 2 - span / 2, (minY + maxY) / 2 - span / 2, span)
+}
+
+/**
+ * Panel interactivo (CU-08): se arrastran los ambientes con el dedo y, al soltarlos cerca del muro de otro, se
+ * pegan con imán. Los botones giran el ambiente tocado; la lista muestra las uniones hechas.
+ */
+@Composable
+private fun InteractivePanel(s: HouseUiState, vm: HouseViewModel) {
+    val state by rememberUpdatedState(s)
+    var frozen by remember { mutableStateOf<PanelView?>(null) }
+    var dragging by remember { mutableStateOf<Long?>(null) }
+    val view = frozen ?: panelView(s)
+    val measurer = rememberTextMeasurer()
+    val labelColor = MaterialTheme.colorScheme.onSurface
+    Card(Modifier.fillMaxWidth()) {
+        Canvas(
+            Modifier.fillMaxWidth().height(340.dp).testTag("house_panel").pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { at ->
+                        val v = panelView(state)
+                        frozen = v
+                        val k = size.width / v.spanM
+                        val p = Point(v.minX + at.x / k, v.minY + (size.height - at.y) / k)
+                        // El ambiente bajo el dedo (el último dibujado queda encima)
+                        dragging = state.selected.lastOrNull { id ->
+                            state.room(id)?.let { HouseLayout.contains(HouseLayout.world(it.vertices, state.poses[id] ?: RoomPose()), p) } == true
+                        }
+                    },
+                    onDrag = { change, amount ->
+                        val id = dragging ?: return@detectDragGestures
+                        change.consume()
+                        val k = size.width / (frozen?.spanM ?: 10.0)
+                        vm.moveRoom(id, amount.x / k, -amount.y / k)
+                    },
+                    onDragEnd = {
+                        dragging?.let(vm::dropRoom)
+                        dragging = null
+                        frozen = null
+                    },
+                    onDragCancel = { dragging = null; frozen = null },
+                )
+            },
+        ) {
+            val k = (size.width / view.spanM).toFloat()
+            fun map(p: Point) = Offset(((p.x - view.minX) * k).toFloat(), size.height - ((p.y - view.minY) * k).toFloat())
+            s.selected.forEach { id ->
+                val room = s.room(id) ?: return@forEach
+                val w = HouseLayout.world(room.vertices, s.poses[id] ?: RoomPose())
+                val path = Path().apply {
+                    w.forEachIndexed { i, p -> val o = map(p); if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
+                    close()
+                }
+                val active = id == s.active
+                drawPath(path, if (active) MetrikColors.Amber.copy(alpha = 0.25f) else MetrikColors.Petrol.copy(alpha = 0.10f))
+                drawPath(path, if (active) MetrikColors.Amber else MetrikColors.Petrol, style = Stroke(if (active) 5f else 3f))
+                val c = HouseLayout.center(w)
+                val label = measurer.measure(room.name, TextStyle(fontSize = 12.sp, color = labelColor))
+                drawText(label, topLeft = map(c) - Offset(label.size.width / 2f, label.size.height / 2f))
+            }
+            // Uniones hechas: punto verde donde se pegaron
+            s.joins.forEach { j ->
+                val a = s.room(j.a) ?: return@forEach
+                val pa = j.aPoint ?: return@forEach
+                drawCircle(MetrikColors.Ok, radius = 9f, center = map(HouseLayout.toWorld(pa, a.vertices, s.poses[j.a] ?: RoomPose())))
+            }
+        }
+    }
+    val active = s.active?.takeIf { it in s.selected }
+    Text(
+        active?.let { "Girar «${s.room(it)?.name}»:" } ?: "Toca un ambiente para girarlo",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf(90.0 to "↺ 90°", -90.0 to "↻ 90°", 15.0 to "↺ 15°", -15.0 to "↻ 15°").forEach { (deg, label) ->
+            OutlinedButton(onClick = { active?.let { vm.rotateRoom(it, deg) } }, enabled = active != null) { Text(label) }
+        }
+    }
+    OutlinedTextField(
+        s.thickness, vm::setThickness, Modifier.fillMaxWidth(), label = { Text("Espesor del muro entre ambientes (m)") },
+        supportingText = { Text("0,15 tabique · 0,25 portante") }, singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+    )
+    if (s.joins.isEmpty()) {
+        Text("Todavía no hay ambientes unidos.", style = MaterialTheme.typography.bodySmall)
+    } else {
+        Text("Unidos:", style = MaterialTheme.typography.bodySmall)
+        s.joins.forEachIndexed { i, j ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("${s.room(j.a)?.name} ↔ ${s.room(j.b)?.name}", Modifier.weight(1f).padding(top = 12.dp))
+                TextButton(onClick = { vm.removeJoin(i) }) { Text("Quitar") }
+            }
+        }
     }
 }
 

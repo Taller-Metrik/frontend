@@ -90,10 +90,10 @@ class HouseViewModelTest {
     @Test
     @Evidencia(
         id = "FU-63", nombre = "Datos inválidos del plano de vivienda", requisito = "RF-25 / EX-08",
-        objetivo = "Verificar que la pantalla no llama al servidor sin ambientes, con un espesor inválido o con una unión "
-            + "a un ambiente que no se eligió, y que cambiar la selección borra la planta anterior.",
-        entrada = "Sin ambientes; luego espesor 'x'; luego unión con la Cocina sin elegirla",
-        esperado = "Tres mensajes de error, 0 peticiones; la planta se borra al quitar un ambiente",
+        objetivo = "Verificar que la pantalla no llama al servidor sin ambientes o con un espesor inválido, que quitar "
+            + "un ambiente borra sus uniones y que cambiar la selección borra la planta anterior.",
+        entrada = "Sin ambientes; luego espesor 'x'; luego se quita la Cocina (que estaba unida)",
+        esperado = "Dos mensajes de error y 0 peticiones; la unión con la Cocina se borra; la planta se borra al quitar un ambiente",
     )
     fun datosInvalidos() = runBlocking {
         val repo = FakeSurveyRepository()
@@ -107,11 +107,11 @@ class HouseViewModelTest {
         vm.updateJoin(0, JoinInput(a = sala, aWall = 0, b = cocina, bWall = 0, thickness = "x"))
         vm.calculate()
         val e2 = vm.state.value.error
-        vm.updateJoin(0, JoinInput(a = sala, aWall = 0, b = cocina, bWall = 0, thickness = "0.15"))
-        vm.toggleRoom(cocina)
-        vm.calculate()
-        val e3 = vm.state.value.error
         val sinPeticiones = plans.requests.isEmpty()
+        vm.updateJoin(0, JoinInput(a = sala, aWall = 0, b = cocina, bWall = 0, thickness = "0.15"))
+        // Quitar un ambiente borra sus uniones (no quedan uniones con ambientes que no se eligieron)
+        vm.toggleRoom(cocina)
+        val e3 = if (vm.state.value.joins.isEmpty()) "uniones borradas" else null
         vm.toggleRoom(cocina); vm.calculate()
         withTimeout(5_000) { vm.state.first { it.result != null } }
         vm.toggleRoom(cocina)
