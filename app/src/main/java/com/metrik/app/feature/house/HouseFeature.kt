@@ -188,13 +188,23 @@ class HouseViewModel(
     }
 
     /** Girar un ambiente alrededor de su centro. */
-    fun rotateRoom(id: Long, degrees: Double) = edit { s ->
+    fun rotateRoom(id: Long, degrees: Double) {
+        rotateOnly(id, degrees)
+        pruneJoins() // girado, ya no toca al ambiente al que estaba pegado
+    }
+
+    private fun rotateOnly(id: Long, degrees: Double) = edit { s ->
         val p = s.poses[id] ?: return@edit s
         s.copy(poses = s.poses + (id to p.copy(rotRad = p.rotRad + Math.toRadians(degrees))), active = id)
     }
 
     /** Deja el ambiente derecho (su muro más largo horizontal o vertical). */
-    fun straightenRoom(id: Long) = edit { s ->
+    fun straightenRoom(id: Long) {
+        straightenOnly(id)
+        pruneJoins()
+    }
+
+    private fun straightenOnly(id: Long) = edit { s ->
         val p = s.poses[id] ?: return@edit s
         val room = s.room(id) ?: return@edit s
         s.copy(poses = s.poses + (id to HouseLayout.straighten(room.vertices, p)), active = id)
@@ -212,7 +222,12 @@ class HouseViewModel(
         val moving = ids.indexOf(id)
         if (moving < 0) return
         val t = number(s.thickness)?.takeIf { it > 0 && it <= MAX_THICKNESS_M } ?: 0.15
-        val snap = HouseLayout.snap(moving, ids.map { s.room(it)!!.vertices }, ids.map { s.poses.getValue(it) }, t) ?: return
+        val snap = HouseLayout.snap(moving, ids.map { s.room(it)!!.vertices }, ids.map { s.poses.getValue(it) }, t)
+        if (snap == null) {
+            // Soltado lejos: las uniones que ya no se tocan se borran
+            pruneJoins()
+            return
+        }
         val other = ids[snap.aIndex]
         val join = JoinInput(
             a = other, b = id, thickness = s.thickness, aPoint = snap.aPointLocal, bPoint = snap.bPointLocal,
@@ -225,7 +240,58 @@ class HouseViewModel(
                 active = id,
             ).copy(message = null)
         }
-        _state.update { it.copy(message = "«${s.room(id)?.name}» unido a «${s.room(other)?.name}»") }
+        val removed = pruneJoins()
+        _state.update {
+            it.copy(message = "«${s.room(id)?.name}» unido a «${s.room(other)?.name}»" + if (removed.isEmpty()) "" else ". " + removedText(removed))
+        }
+    }
+
+    /**
+     * Borra las uniones hechas con imán cuyos ambientes ya no se tocan (se separaron o se giraron): así la planta
+     * nunca se arma con uniones viejas. Devuelve los pares borrados.
+     */
+    private fun pruneJoins(): List<Pair<String, String>> {
+        val s = _state.value
+        val stale = s.joins.filter { j ->
+            val a = s.room(j.a)
+            val b = s.room(j.b)
+            val pa = s.poses[j.a]
+            val pb = s.poses[j.b]
+            val ap = j.aPoint
+            val bp = j.bPoint
+            if (a == null || b == null || pa == null || pb == null || ap == null || bp == null || j.door != null) return@filter false
+            val t = number(j.thickness) ?: return@filter false
+            val gap = com.metrik.app.core.geometry.Geometry.euclidean(
+                HouseLayout.toWorld(ap, a.vertices, pa), HouseLayout.toWorld(bp, b.vertices, pb),
+            )
+            kotlin.math.abs(gap - t) > JOIN_TOLERANCE_M
+        }
+        if (stale.isEmpty()) return emptyList()
+        _state.update { it.copy(joins = it.joins - stale.toSet(), result = null) }
+        val removed = stale.map { (s.room(it.a)?.name ?: "?") to (s.room(it.b)?.name ?: "?") }
+        _state.update { it.copy(message = removedText(removed)) }
+        return removed
+    }
+
+    private fun removedText(removed: List<Pair<String, String>>) =
+        "Se quitó la unión " + removed.joinToString { "«${it.first}» ↔ «${it.second}»" } + " porque ya no se tocan"
+
+    /**
+     * La planta del servidor viene en la orientación original del ambiente base (el primero elegido): se gira y
+     * ubica como ese ambiente en el panel, para que se vea igual que lo armado (enderezado), no en diagonal.
+     */
+    fun alignedResult(): List<PlacedRoomDto>? {
+        val s = _state.value
+        val r = s.result ?: return null
+        val base = s.selected.firstOrNull() ?: return r.rooms
+        val local = s.room(base)?.vertices ?: return r.rooms
+        val pose = s.poses[base] ?: return r.rooms
+        return r.rooms.map { room ->
+            room.copy(vertices = room.vertices.map { v ->
+                val w = HouseLayout.toWorld(Point(v[0], v[1]), local, pose)
+                listOf(w.x, w.y)
+            })
+        }
     }
 
     /** Nueva unión: por defecto la base con el primer ambiente elegido que todavía no está unido. */
@@ -325,6 +391,8 @@ class HouseViewModel(
 
     companion object {
         const val MAX_THICKNESS_M = 0.50
+        /** Una unión con imán sigue vigente si sus dos puntos siguen al espesor del muro (± 10 cm). */
+        const val JOIN_TOLERANCE_M = 0.10
 
         fun dxfFileName(projectId: Int) = "metrik_vivienda_$projectId.dxf"
 
@@ -387,7 +455,8 @@ fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit, onMeasureContour: () -> 
                 onClick = vm::calculate, enabled = !s.busy && s.selected.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth().testTag("house_calculate"),
             ) { Text("Armar la planta") }
-            s.result?.let { HouseResult(it) }
+            // Orientada como el panel (el servidor la devuelve en la orientación original de la medición)
+            s.result?.let { HouseResult(it.copy(rooms = vm.alignedResult() ?: it.rooms)) }
             OutlinedButton(
                 onClick = vm::exportDxf, enabled = !s.busy && s.selected.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth().testTag("house_dxf"),
