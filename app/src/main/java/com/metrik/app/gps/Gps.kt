@@ -61,6 +61,7 @@ class FusedLocationSource(context: Context) : LocationSource {
                         GpsSample(
                             l.latitude, l.longitude, l.accuracy.toDouble(), l.time / 1000.0,
                             satellites = q?.satellites, cn0DbHz = q?.cn0DbHz,
+                            speedMps = if (l.hasSpeed()) l.speed.toDouble() else null,
                         ),
                     )
                 }
@@ -164,6 +165,15 @@ class GpsTrackFilter(
 /** Cálculos GPS en el celular (versión ligera de backend/app/services/gps.py). */
 object GpsMath {
     const val EARTH_RADIUS_M = 6_371_000.0
+
+    /** Bajo esta velocidad Doppler la persona está quieta (caminar despacio ya es ~0,8 m/s). */
+    const val STILL_SPEED_MPS = 0.3
+
+    /**
+     * true si el GPS dice que el celular está quieto. Quieto, la posición "pasea" varios metros por los
+     * rebotes de la señal, pero la velocidad Doppler sigue cerca de 0. Sin dato de velocidad: false.
+     */
+    fun isStill(s: GpsSample): Boolean = s.speedMps?.let { it < STILL_SPEED_MPS } == true
 
     /**
      * Punto de partida a partir de las lecturas de calibración (la persona estaba quieta en el inicio):

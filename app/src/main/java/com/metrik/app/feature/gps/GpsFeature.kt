@@ -242,7 +242,7 @@ class GpsViewModel(
         job = viewModelScope.launch {
             location.samples.collect { s ->
                 if (consumeDwell(s)) return@collect
-                val accepted = filter.offer(s)
+                val accepted = filter.offer(s, moving = !GpsMath.isStill(s))
                 if (accepted.isEmpty()) {
                     _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
                     return@collect
@@ -273,13 +273,16 @@ class GpsViewModel(
         _state.update { it.copy(usingSteps = true, steps = 0, gpsCorrections = 0) }
         job = viewModelScope.launch {
             launch {
+                // Un paso suelto (mover el celular en la mano) no cuenta: solo los de una racha de caminata
+                val gate = com.metrik.app.sensors.WalkingGate()
                 compass.collect { headingRad ->
                     val f = fusion ?: return@collect // sin punto de partida todavía: se espera el primer GPS
                     val o = origin ?: return@collect
+                    val confirmed = gate.onStep(nanoClock(), headingRad)
+                    if (confirmed.isEmpty()) return@collect
                     lastStepNs = nanoClock()
-                    f.onStep(headingRad)
-                    times += wallClockS()
-                    publish(f, o) { it.copy(steps = it.steps + 1) }
+                    confirmed.forEach { h -> f.onStep(h); times += wallClockS() }
+                    publish(f, o) { it.copy(steps = it.steps + confirmed.size) }
                 }
             }
             location.samples.collect { s ->
@@ -300,7 +303,7 @@ class GpsViewModel(
                 }
                 // Quieto (sin pasos recientes): el GPS "pasea" y no debe mover la posición
                 val walking = lastStepNs?.let { nanoClock() - it < STEP_WINDOW_NS } == true
-                if (!walking) { _state.update { it.copy(lastAccuracyM = s.accuracyM) }; return@collect }
+                if (!walking || GpsMath.isStill(s)) { _state.update { it.copy(lastAccuracyM = s.accuracyM) }; return@collect }
                 val used = f.onGps(GpsMath.toEnu(listOf(s), o.lat, o.lon).first(), s.accuracyM)
                 if (used) publish(f, o) { it.copy(gpsCorrections = it.gpsCorrections + 1, lastAccuracyM = s.accuracyM) }
                 else _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }

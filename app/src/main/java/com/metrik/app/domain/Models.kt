@@ -22,6 +22,11 @@ data class GpsSample(
     val satellites: Int? = null,
     val cn0DbHz: Double? = null,
     val vertexId: Int? = null,
+    /**
+     * Velocidad Doppler del GPS (m/s), si el celular la informa. No se guarda ni se envía: solo sirve para
+     * saber si la persona está quieta (el Doppler casi no sufre los rebotes que hacen "pasear" la posición).
+     */
+    @kotlinx.serialization.Transient val speedMps: Double? = null,
 )
 
 @Serializable
