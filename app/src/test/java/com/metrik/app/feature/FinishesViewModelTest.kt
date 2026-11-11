@@ -18,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -119,5 +120,31 @@ class FinishesViewModelTest {
         ev.obtenido = "propio=${propio.price} (${propio.source}), tienda=${tienda.price} (${tienda.source})"
         assertEquals(28.5, propio.price!!, 1e-9)
         assertEquals(30.9, tienda.price!!, 1e-9)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-60", nombre = "Presupuesto de acabados desactualizado", requisito = "RF-22 / RF-23",
+        objetivo = "Verificar que el metrado y el presupuesto anteriores se borran al cambiar la altura, la mano de obra "
+            + "o un precio del catálogo, porque ya no corresponden.",
+        entrada = "Metrado calculado; luego altura '2,70'; recalculado; luego precio propio del cemento '28'",
+        esperado = "El resultado queda vacío después de cada cambio",
+    )
+    fun presupuestoDesactualizado() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val fin = FakeFinishes()
+        val vm = FinishesViewModel(aula(repo), repo, fin)
+        withTimeout(5_000) { vm.state.first { it.survey != null && it.prices.isNotEmpty() && !it.busy } }
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        vm.setHeight("2,70")
+        val tras1 = vm.state.value.result
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        vm.setOwnPrice("cement_bag", "28")
+        val tras2 = withTimeout(5_000) { vm.state.first { it.prices.single().source == "user" && !it.busy } }.result
+        ev.obtenido = "resultado tras altura=$tras1, tras precio=$tras2"
+        assertNull(tras1)
+        assertNull(tras2)
     }
 }
