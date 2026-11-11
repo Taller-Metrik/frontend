@@ -127,6 +127,8 @@ class GpsViewModel(
     private val wallClockS: () -> Double = { System.currentTimeMillis() / 1000.0 },
 ) : ViewModel() {
     private var lastStepNs: Long? = null
+    /** Aplica el ajuste completo de pasos + GPS al trazo (en pantalla se acerca de a poco); null = solo GPS. */
+    private var settleSteps: (() -> Unit)? = null
     /** Lecturas quietas etiquetadas con su vértice (0 = partida al final, 1.. = esquinas); se guardan aparte del trazo. */
     private val cornerSamples = mutableListOf<GpsSample>()
     /** Índice del punto del recorrido en el que se tocó cada esquina. */
@@ -223,6 +225,7 @@ class GpsViewModel(
 
     fun startRecording() {
         job?.cancel()
+        settleSteps = null
         cornerSamples.clear()
         cornerIdx.clear()
         stillBuffer.clear()
@@ -288,6 +291,11 @@ class GpsViewModel(
             _state.update { extra(it.copy(samples = samples, track = GpsMath.toEnu(samples))) }
         }
         _state.update { it.copy(usingSteps = true, steps = 0, gpsCorrections = 0) }
+        settleSteps = {
+            val f = fusion
+            val o = origin
+            if (f != null && o != null) { f.settle(); publish(f, o) { it } }
+        }
         job = viewModelScope.launch {
             launch {
                 // Un paso suelto (mover el celular en la mano) no cuenta: solo los de una racha de caminata
@@ -341,6 +349,8 @@ class GpsViewModel(
     /** Termina el recorrido en la partida: cierra la poligonal, corrige el recorrido y calcula el área. */
     fun finish() {
         job?.cancel()
+        // El plano final se calcula con el ajuste completo, no con el que se estaba mostrando de a poco
+        settleSteps?.invoke()
         val s = _state.value
         // Si ya se caminó después de la última esquina, las lecturas quietas del final son el cierre en la partida
         val endSamples = if (currentCorner == null) stillBuffer.toList() else emptyList()
