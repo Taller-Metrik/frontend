@@ -144,4 +144,33 @@ class HouseViewModelTest {
         assertEquals("metrik_vivienda_7.dxf", saved.single().first)
         assertNotNull(s.message)
     }
+    @Test
+    @Evidencia(
+        id = "FU-80", nombre = "Contorno de la casa comparado con la suma de los ambientes", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar que el contorno de la vivienda (medido caminando su borde) se reconoce por su nombre, no se "
+            + "ofrece como ambiente para unir y se compara su área y perímetro con la suma de los ambientes.",
+        entrada = "Sala 12 m² y Cocina 9 m² (interiores) y «Contorno de la casa» 24 m², perímetro 20 m; un terreno GPS",
+        esperado = "Ambientes = Sala y Cocina; contorno elegido solo; suma 21 m², diferencia 3 m² (12,5 %); al elegir "
+            + "solo la Sala, la suma es 12 m²",
+    )
+    fun contornoDeLaCasa() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val (sala, _, _) = casa(repo)
+        repo.saveLocal(LocalSurvey(projectId = 7, name = "Contorno de la casa", mode = SurveyMode.INTERIOR, vertices = rect(6.0, 4.0),
+            areaM2 = 24.0, perimeterM = 20.0, scaleDenominator = 50))
+        val vm = HouseViewModel(7, repo, FakeFloorPlans()) { name, _ -> name }
+        val s = withTimeout(5_000) { vm.state.first { it.contour != null } }
+        val c = vm.comparison()!!
+        vm.toggleRoom(sala)
+        val soloSala = vm.comparison()!!
+        ev.obtenido = "ambientes=${s.rooms.map { it.name }}, contorno=${s.contour?.name}, " +
+            "suma=${c.roomsAreaM2}, diferencia=${c.differenceM2} (${"%.1f".format(c.differencePct)} %), solo sala=${soloSala.roomsAreaM2}"
+        assertEquals(listOf("Sala", "Cocina"), s.rooms.map { it.name })
+        assertEquals(24.0, c.contourAreaM2, 1e-9)
+        assertEquals(20.0, c.contourPerimeterM, 1e-9)
+        assertEquals(21.0, c.roomsAreaM2, 1e-9)
+        assertEquals(3.0, c.differenceM2, 1e-9)
+        assertEquals(12.5, c.differencePct, 1e-9)
+        assertEquals(12.0, soloSala.roomsAreaM2, 1e-9)
+    }
 }
