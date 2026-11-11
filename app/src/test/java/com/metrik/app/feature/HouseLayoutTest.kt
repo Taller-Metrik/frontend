@@ -114,4 +114,23 @@ class HouseLayoutTest {
         assertTrue(worstDeg(straightened) < 0.01)
         assertEquals(7.2, Geometry.analyze(w1).areaM2, 1e-6)
     }
+    @Test
+    @Evidencia(
+        id = "FU-93", nombre = "Imán con un ambiente medido en el otro sentido", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar que el imán pega también un ambiente recorrido en sentido contrario (horario vs. "
+            + "antihorario): sus muros enfrentados van en el mismo sentido. En campo el pasadizo nunca se pegaba.",
+        entrada = "Sala 4×3 (antihoraria); pasadizo 2×3 con los vértices en sentido horario, soltado a 0,3 m del muro derecho de la sala",
+        esperado = "Se pega al muro derecho de la sala, paralelo, a 0,15 m",
+    )
+    fun imanSentidoContrario() {
+        val sala = rect(4.0, 3.0)
+        val pasadizo = rect(2.0, 3.0).reversed() // recorrido en el otro sentido
+        val snap = HouseLayout.snap(1, listOf(sala, pasadizo), listOf(RoomPose(), RoomPose(dx = 4.3, dy = 0.2)), thicknessM = 0.15)
+        val placed = snap?.let { HouseLayout.world(pasadizo, it.pose) }
+        val minX = placed?.minOf { it.x }
+        ev.obtenido = "pegado=${snap != null}, muro de la sala=${snap?.let { it.aWall + 1 }}, borde izquierdo del pasadizo=${minX?.let { "%.3f".format(it) }}"
+        assertNotNull(snap)
+        assertEquals(1, snap!!.aWall)
+        assertEquals(4.15, minX!!, 1e-6)
+    }
 }
