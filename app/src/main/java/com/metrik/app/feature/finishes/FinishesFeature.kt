@@ -65,6 +65,11 @@ data class FinishesUiState(
     val walls: Int get() = survey?.vertices?.size ?: 0
 }
 
+/** Insumos que usa el metrado de acabados (mismas claves que el backend en services/finishes.py). */
+val FINISH_MATERIALS = setOf(
+    "porcelain_box", "tile_adhesive_bag", "grout_kg", "cement_bag", "fine_sand_bag", "paint_gallon", "primer_4gal",
+)
+
 /** Metrado de acabados (CU-07): partidas, insumos y presupuesto calculados en el servidor con el catálogo. */
 class FinishesViewModel(
     private val localId: Long,
@@ -95,7 +100,13 @@ class FinishesViewModel(
         it.copy(openings = it.openings.mapIndexed { k, o -> if (k == i) OpeningInput(wall, kind, width, height) else o })
     }
 
-    fun loadPrices() = busy { _state.update { it.copy(prices = repo.prices()) } }
+    fun loadPrices() = busy { _state.update { it.copy(prices = finishPrices()) } }
+
+    /**
+     * Solo los insumos de acabados interiores. El catálogo de la tienda también trae los del cerco perimétrico
+     * (madera, alambre de púas, grapas, piedra, ladrillo, fierro), que corresponden a la medición exterior con GPS.
+     */
+    private suspend fun finishPrices(): List<PriceDto> = repo.prices().filter { it.key in FINISH_MATERIALS }
 
     fun setOwnPrice(key: String, text: String) {
         val price = number(text)?.takeIf { it >= 0 }
@@ -103,10 +114,10 @@ class FinishesViewModel(
             _state.update { it.copy(error = "El precio debe ser un número mayor o igual que 0") }
             return
         }
-        busy { repo.setPrice(key, price); val prices = repo.prices(); edit { it.copy(prices = prices) } }
+        busy { repo.setPrice(key, price); val prices = finishPrices(); edit { it.copy(prices = prices) } }
     }
 
-    fun resetPrice(key: String) = busy { repo.resetPrice(key); val prices = repo.prices(); edit { it.copy(prices = prices) } }
+    fun resetPrice(key: String) = busy { repo.resetPrice(key); val prices = finishPrices(); edit { it.copy(prices = prices) } }
 
     fun calculate() {
         val s = _state.value
