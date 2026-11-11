@@ -173,4 +173,38 @@ class HouseViewModelTest {
         assertEquals(12.5, c.differencePct, 1e-9)
         assertEquals(12.0, soloSala.roomsAreaM2, 1e-9)
     }
+    @Test
+    @Evidencia(
+        id = "FU-89", nombre = "Panel interactivo: arrastrar la cocina junto a la sala y armar la planta", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar que al elegir ambientes aparecen separados en el panel, que al arrastrar uno y soltarlo junto "
+            + "a otro se pega con imán y queda la unión, y que la planta se pide al servidor con los puntos de esa unión.",
+        entrada = "Sala 4×3 y Cocina 3×3 elegidas; la cocina se arrastra hasta 0,3 m del muro derecho de la sala y se suelta",
+        esperado = "2 posiciones iniciales; 1 unión Sala↔Cocina con puntos en ambos muros; petición sin números de muro "
+            + "(los decide el punto) y con a_point/b_point",
+    )
+    fun panelInteractivo() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val plans = FakeFloorPlans()
+        val (sala, cocina, _) = casa(repo)
+        val vm = HouseViewModel(7, repo, plans) { name, _ -> name }
+        withTimeout(5_000) { vm.state.first { it.rooms.size == 2 } }
+        vm.toggleRoom(sala); vm.toggleRoom(cocina)
+        val poses = vm.state.value.poses
+        // La cocina empieza a 1 m a la derecha de la sala: se la acerca 0,7 m (queda a 0,3 m) y se suelta
+        vm.moveRoom(cocina, -0.7, 0.2)
+        vm.dropRoom(cocina)
+        val s = vm.state.value
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null || it.error != null } }
+        val join = plans.requests.single().second.joins.single()
+        ev.obtenido = "posiciones=${poses.size}, uniones=${s.joins.map { "${s.room(it.a)?.name}↔${s.room(it.b)?.name}" }}, " +
+            "mensaje=${s.message}, petición=$join"
+        assertEquals(2, poses.size)
+        assertEquals(1, s.joins.size)
+        assertEquals(setOf(sala, cocina), setOf(s.joins.single().a, s.joins.single().b))
+        assertNull(join.aWall)
+        assertNull(join.bWall)
+        assertNotNull(join.aPoint)
+        assertNotNull(join.bPoint)
+    }
 }
