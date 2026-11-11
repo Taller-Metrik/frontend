@@ -92,6 +92,8 @@ data class GpsUiState(
     val closureM: Double? = null,
     /** false = el cierre es mayor de lo esperable: conviene volver a medir. */
     val closureConsistent: Boolean? = null,
+    /** Precisión de la última lectura descartada por señal de interior al medir la precisión; null = señal buena. */
+    val weakSignalM: Double? = null,
 )
 
 /** Medición exterior con GPS (CU-02): calibración condicional, recorrido y área (RF-08, RF-09). */
@@ -128,6 +130,8 @@ class GpsViewModel(
     val state: StateFlow<GpsUiState> = _state
     private var job: Job? = null
     private val calibration = mutableListOf<GpsSample>()
+    /** Precisión de todas las lecturas del recorrido (para saber si el terreno es más grande que el error). */
+    private val recordAccuracies = mutableListOf<Double>()
 
     /** Lecturas con el celular quieto para estimar el margen de error inicial. */
     fun calibrate() {
@@ -136,8 +140,13 @@ class GpsViewModel(
         _state.update { it.copy(phase = GpsPhase.CALIBRATING, calibrationSamples = 0, error = null) }
         job = viewModelScope.launch {
             location.samples.collect { s ->
+                // Bajo techo o junto a una pared el error es de 10–20 m: esas lecturas no sirven para el punto de partida
+                if (s.accuracyM > CALIBRATION_MAX_ACCURACY_M) {
+                    _state.update { it.copy(weakSignalM = s.accuracyM, lastAccuracyM = s.accuracyM) }
+                    return@collect
+                }
                 calibration += s
-                _state.update { it.copy(calibrationSamples = calibration.size, lastAccuracyM = s.accuracyM) }
+                _state.update { it.copy(calibrationSamples = calibration.size, lastAccuracyM = s.accuracyM, weakSignalM = null) }
                 if (calibration.size >= calibrationTarget) {
                     val err = GpsMath.staticError(calibration)
                     _state.update { it.copy(phase = GpsPhase.READY, calibration = err) }
@@ -214,6 +223,7 @@ class GpsViewModel(
     fun startRecording() {
         job?.cancel()
         cornerSamples.clear()
+        recordAccuracies.clear()
         closingDwell = false
         dwellStartIndex = 0
         val profile = Transport.of(_state.value.transport)
@@ -241,6 +251,7 @@ class GpsViewModel(
         }
         job = viewModelScope.launch {
             location.samples.collect { s ->
+                recordAccuracies += s.accuracyM
                 if (consumeDwell(s)) return@collect
                 val accepted = filter.offer(s, moving = !GpsMath.isStill(s))
                 if (accepted.isEmpty()) {
@@ -286,6 +297,7 @@ class GpsViewModel(
                 }
             }
             location.samples.collect { s ->
+                recordAccuracies += s.accuracyM
                 if (consumeDwell(s)) return@collect
                 if (s.accuracyM > profile.maxAccuracyM) {
                     _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
@@ -317,16 +329,48 @@ class GpsViewModel(
         // Una esquina a medio fijar no cuenta: sus pocas lecturas inflarían σ o falsearían el cierre
         if (_state.value.fixingVertex != null) discardIncompleteDwell()
         _state.update { it.copy(fixingVertex = null, dwellCount = 0) }
-        if (GpsPrecision.fixedCorners(cornerSamples) >= 3 && finishWithCorners(samples.firstOrNull())) return
+        tooSmallForGps(samples + cornerSamples)?.let { msg ->
+            _state.update { it.copy(phase = GpsPhase.READY, polygon = emptyList(), analysis = null, error = msg) }
+            return
+        }
+        if (GpsPrecision.fixedCorners(cornerSamples) >= 3 && finishWithCorners(samples.firstOrNull())) {
+            warnIfCrossed()
+            return
+        }
         runCatching { GpsMath.areaPolygon(samples, Transport.of(_state.value.transport).maxAccuracyM) }
             .onSuccess { (vertices, analysis) ->
                 _state.update { it.copy(phase = GpsPhase.FINISHED, polygon = vertices, analysis = analysis) }
+                warnIfCrossed()
             }
             .onFailure { t ->
                 _state.update {
                     it.copy(phase = GpsPhase.READY, error = (t as? GeometryException)?.message ?: "No se pudo calcular el área")
                 }
             }
+    }
+
+    /**
+     * Mensaje si lo recorrido no es claramente mayor que el error del GPS (p. ej. 4 m con ±8 m de error): el
+     * polígono saldría de puro ruido. Null si el terreno se puede medir con GPS.
+     */
+    private fun tooSmallForGps(points: List<GpsSample>): String? {
+        val accuracies = recordAccuracies.filter { it <= Transport.of(_state.value.transport).maxAccuracyM }.sorted()
+        if (points.size < 2 || accuracies.isEmpty()) return null
+        val typical = accuracies[accuracies.size / 2]
+        val xy = GpsMath.toEnu(points)
+        val extent = xy.maxOf { a -> xy.maxOf { b -> Geometry.euclidean(a, b) } }
+        if (extent >= MIN_EXTENT_PER_ERROR * typical) return null
+        return "Recorrido muy pequeño para GPS: abarca ${extent.toInt()} m y cada lectura tiene ±${typical.toInt()} m de error. " +
+            "Para ambientes o espacios chicos usa «Medir un ambiente» (cámara o pasos); el GPS es para terrenos grandes."
+    }
+
+    /** Aviso si el terreno se cruza consigo mismo (por ejemplo, ida y vuelta por el mismo camino), como en interiores. */
+    private fun warnIfCrossed() {
+        if (_state.value.analysis?.isSimple == false) {
+            _state.update {
+                it.copy(error = "El terreno se cruza consigo mismo: recorre el borde sin volver por el mismo camino y vuelve al inicio (EX-06).")
+            }
+        }
     }
 
     /**
@@ -368,6 +412,10 @@ class GpsViewModel(
 
     private companion object {
         const val STEP_WINDOW_NS = 3_000_000_000L // sin pasos en 3 s = quieto
+        /** Peor precisión aceptada al medir la precisión inicial: más que esto es señal de interior. */
+        const val CALIBRATION_MAX_ACCURACY_M = 6.0
+        /** El terreno debe abarcar al menos este múltiplo del error típico de las lecturas para medirlo con GPS. */
+        const val MIN_EXTENT_PER_ERROR = 2.5
         /**
          * Precisión que se guarda en los puntos por pasos: es la del trazo (un paso), no la absoluta.
          * El suavizado del área usa 2 × la mediana como tolerancia: con la del GPS (4–8 m) borraría
@@ -423,6 +471,13 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                 }
                 GpsPhase.CALIBRATING -> {
                     Text("Quédate quieto… ${s.calibrationSamples} lecturas")
+                    s.weakSignalM?.let { acc ->
+                        Text(
+                            "Señal débil (±${acc.toInt()} m): sal al aire libre, lejos de techos, paredes altas y árboles. " +
+                                "Las lecturas no cuentan hasta que la señal mejore.",
+                            color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("gps_weak_signal"),
+                        )
+                    }
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
                 GpsPhase.READY -> {
