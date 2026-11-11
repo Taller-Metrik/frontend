@@ -48,6 +48,9 @@ class PdrGpsFusion(
     /** Todo el recorrido con el ajuste más reciente (la figura entera se corrige junta). */
     fun track(): List<Point> = raw.map(::transform)
 
+    /** Deja el trazo con el último ajuste completo (al terminar la medición). */
+    fun settle() {}
+
     /** Un paso en la dirección [headingRad] (0 = norte, π/2 = este). */
     fun onStep(headingRad: Double) {
         val last = raw.last()
