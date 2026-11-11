@@ -79,4 +79,39 @@ class HouseLayoutTest {
         ev.obtenido = "separaciones=${gaps.map { "%.2f".format(it) }} m, áreas=${worlds.map { "%.1f".format(Geometry.analyze(it).areaM2) }}"
         assertTrue(gaps.all { it >= 0.5 })
     }
+    @Test
+    @Evidencia(
+        id = "FU-90", nombre = "Enderezar un ambiente medido en diagonal", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar que un ambiente medido en diagonal (el recorrido no empieza alineado al norte) aparece en "
+            + "el panel enderezado: todos sus muros horizontales o verticales, para que con giros de 90° calce con los demás.",
+        entrada = "Sala 4×1,8 m girada 52° y un ambiente en L girado −20°",
+        esperado = "Tras enderezar, cada muro forma 0° o 90° con los ejes (± 0,01°); el área no cambia",
+    )
+    fun enderezar() {
+        fun rotate(v: List<Point>, deg: Double): List<Point> {
+            val r = Math.toRadians(deg)
+            return v.map { Point(it.x * kotlin.math.cos(r) - it.y * kotlin.math.sin(r), it.x * kotlin.math.sin(r) + it.y * kotlin.math.cos(r)) }
+        }
+        val sala = rotate(rect(4.0, 1.8), 52.0)
+        val ele = rotate(listOf(Point(0.0, 0.0), Point(4.0, 0.0), Point(4.0, 2.0), Point(2.0, 2.0), Point(2.0, 4.0), Point(0.0, 4.0)), -20.0)
+        val poses = HouseLayout.initialPoses(listOf(sala, ele))
+        fun worstDeg(v: List<Point>): Double = v.indices.maxOf { i ->
+            val a = v[i]
+            val b = v[(i + 1) % v.size]
+            val ang = Math.toDegrees(atan2(b.y - a.y, b.x - a.x))
+            val m = ((ang % 90.0) + 90.0) % 90.0
+            minOf(m, 90.0 - m)
+        }
+        val w1 = HouseLayout.world(sala, poses[0])
+        val w2 = HouseLayout.world(ele, poses[1])
+        val turned = HouseLayout.world(sala, poses[0].copy(rotRad = poses[0].rotRad + 0.4))
+        val straightened = HouseLayout.world(sala, HouseLayout.straighten(sala, poses[0].copy(rotRad = poses[0].rotRad + 0.4)))
+        ev.obtenido = "desvío máx. sala=${"%.3f".format(worstDeg(w1))}°, en L=${"%.3f".format(worstDeg(w2))}°, " +
+            "girada a mano=${"%.1f".format(worstDeg(turned))}° → enderezada=${"%.3f".format(worstDeg(straightened))}°, " +
+            "área sala=${"%.2f".format(Geometry.analyze(w1).areaM2)}"
+        assertTrue(worstDeg(w1) < 0.01)
+        assertTrue(worstDeg(w2) < 0.01)
+        assertTrue(worstDeg(straightened) < 0.01)
+        assertEquals(7.2, Geometry.analyze(w1).areaM2, 1e-6)
+    }
 }
