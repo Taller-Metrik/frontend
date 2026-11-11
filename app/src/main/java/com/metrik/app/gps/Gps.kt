@@ -242,16 +242,77 @@ object GpsMath {
     }
 
     /** Polígono métrico del terreno recorrido: filtra por precisión, simplifica y analiza (RF-08). */
-    fun areaPolygon(samples: List<GpsSample>, maxAccuracyM: Double = 10.0): Pair<List<Point>, PolygonAnalysis> {
+    fun areaPolygon(samples: List<GpsSample>, maxAccuracyM: Double = 10.0): Pair<List<Point>, PolygonAnalysis> =
+        closedPolygon(samples, maxAccuracyM).let { it.vertices to it.analysis }
+
+    /**
+     * Polígono del terreno. [closureM] = distancia entre el final del recorrido y el punto de partida (antes de
+     * repartirla); null si el recorrido no volvió al inicio. [droppedTail] = lecturas descartadas después de volver.
+     */
+    data class ClosedPolygon(val vertices: List<Point>, val analysis: PolygonAnalysis, val closureM: Double?, val droppedTail: Int)
+
+    /** Recorrido en metros ya cerrado: [points] empieza en el punto de partida y termina justo antes de volver a él. */
+    data class Loop(val points: List<Point>, val closed: Boolean, val closureM: Double?, val droppedTail: Int)
+
+    /**
+     * Cierra el recorrido en el punto de partida, como se ajusta una poligonal en topografía:
+     * 1. **Vuelta al inicio:** el punto de la segunda mitad del recorrido más cercano al inicio. Si después de él las
+     *    lecturas se alejan más que [toleranceM] (por ejemplo, la señal se degrada bajo un techo al terminar), esa
+     *    cola se descarta: es la que cruzaba el polígono.
+     * 2. **Regla de la brújula (Bowditch):** la diferencia entre ese punto y el inicio se reparte en todo el recorrido
+     *    en proporción a la distancia caminada; así el final coincide exactamente con el inicio, sin un quiebre al final.
+     * Si el recorrido no volvió cerca del inicio (más de 3 × [toleranceM] y del 10 % de lo caminado), no se fuerza.
+     */
+    fun closeAtStart(xy: List<Point>, toleranceM: Double): Loop {
+        if (xy.size < 4) return Loop(xy, false, null, 0)
+        val cum = DoubleArray(xy.size)
+        for (i in 1 until xy.size) cum[i] = cum[i - 1] + Geometry.euclidean(xy[i - 1], xy[i])
+        val total = cum.last()
+        if (total <= 0.0) return Loop(xy, false, null, 0)
+        val start = xy.first()
+        val dist = xy.map { Geometry.euclidean(it, start) }
+        val nearest = xy.indices.filter { cum[it] >= total / 2 }.minBy { dist[it] }
+        val wandersAway = (nearest + 1 until xy.size).maxOfOrNull { dist[it] }?.let { it - dist[nearest] > toleranceM } == true
+        val k = if (wandersAway) nearest else xy.lastIndex
+        val gap = dist[k]
+        if (cum[k] <= 0.0 || gap > maxOf(3 * toleranceM, 0.1 * cum[k])) return Loop(xy, false, null, 0)
+        val ex = xy[k].x - start.x
+        val ey = xy[k].y - start.y
+        val adjusted = (0..k).map { i -> Point(xy[i].x - ex * cum[i] / cum[k], xy[i].y - ey * cum[i] / cum[k]) }
+        return Loop(adjusted.dropLast(1), true, gap, xy.lastIndex - k)
+    }
+
+    /** Polígono métrico del terreno recorrido, cerrado en el punto de partida: filtra, cierra, simplifica y analiza (RF-08). */
+    fun closedPolygon(samples: List<GpsSample>, maxAccuracyM: Double = 10.0): ClosedPolygon {
         val valid = samples.filter { it.accuracyM <= maxAccuracyM }
         if (valid.size < 3) throw GeometryException("Solo ${valid.size} lecturas con precisión ≤ ${maxAccuracyM.toInt()} m (EX-04)")
         val xy = toEnu(valid)
         val accuracies = valid.map { it.accuracyM }.sorted()
         val epsilon = maxOf(1.0, 2 * accuracies[accuracies.size / 2])
-        var vertices = if (xy.size > 3) Smoothing.rdp(xy, epsilon) else xy
-        if (vertices.size > 3 && Geometry.euclidean(vertices.first(), vertices.last()) < maxOf(epsilon, 1.0)) {
-            vertices = vertices.dropLast(1)
+        val loop = closeAtStart(xy, epsilon)
+        var vertices: List<Point>
+        if (loop.closed && loop.points.size >= 3) {
+            // Lazo cerrado: se simplifica de inicio a inicio y el inicio queda como vértice...
+            vertices = Smoothing.rdp(loop.points + loop.points.first(), epsilon).dropLast(1)
+            // ...salvo que esté a mitad de un lado (se empezó a mitad de un borde): entonces no es esquina
+            if (vertices.size > 3 && segmentDistance(vertices[0], vertices.last(), vertices[1]) < epsilon / 2) {
+                vertices = vertices.drop(1)
+            }
+        } else {
+            vertices = if (xy.size > 3) Smoothing.rdp(xy, epsilon) else xy
+            if (vertices.size > 3 && Geometry.euclidean(vertices.first(), vertices.last()) < maxOf(epsilon, 1.0)) {
+                vertices = vertices.dropLast(1)
+            }
         }
-        return vertices to Geometry.analyze(vertices)
+        return ClosedPolygon(vertices, Geometry.analyze(vertices), loop.closureM, loop.droppedTail)
+    }
+
+    private fun segmentDistance(p: Point, a: Point, b: Point): Double {
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val len2 = dx * dx + dy * dy
+        if (len2 == 0.0) return Geometry.euclidean(p, a)
+        val t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).coerceIn(0.0, 1.0)
+        return Geometry.euclidean(p, Point(a.x + dx * t, a.y + dy * t))
     }
 }

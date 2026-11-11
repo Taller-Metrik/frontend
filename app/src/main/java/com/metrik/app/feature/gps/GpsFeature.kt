@@ -337,9 +337,11 @@ class GpsViewModel(
             warnIfCrossed()
             return
         }
-        runCatching { GpsMath.areaPolygon(samples, Transport.of(_state.value.transport).maxAccuracyM) }
-            .onSuccess { (vertices, analysis) ->
-                _state.update { it.copy(phase = GpsPhase.FINISHED, polygon = vertices, analysis = analysis) }
+        runCatching { GpsMath.closedPolygon(samples, Transport.of(_state.value.transport).maxAccuracyM) }
+            .onSuccess { r ->
+                _state.update {
+                    it.copy(phase = GpsPhase.FINISHED, polygon = r.vertices, analysis = r.analysis, closureM = r.closureM)
+                }
                 warnIfCrossed()
             }
             .onFailure { t ->
@@ -530,6 +532,12 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                             )
                         }
                         s.closureM?.let { StatRow("Error de cierre", it.m(2)) }
+                        if (u == null && s.closureM != null) {
+                            Text(
+                                "Ese error se repartió a lo largo del recorrido: la figura cierra exactamente en el punto de partida.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                         if (s.closureConsistent == false) {
                             Text(
                                 "El cierre es mayor de lo esperable para la precisión del GPS: conviene volver a medir con más tiempo en cada esquina.",
