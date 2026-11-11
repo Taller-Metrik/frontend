@@ -108,6 +108,8 @@ class GpsCornersViewModelTest {
             "cierre=${"%.2f".format(done.closureM)} m, error=${done.error}, vertex_ids=${saved.gps!!.mapNotNull { it.vertexId }.toSet()}, " +
             "corners guardados=${saved.corners?.size}"
         assertEquals(3, recording.cornersFixed)
+        // Las esquinas dibujadas mientras se recorre caen sobre el trazo (aunque el GPS lo haya corregido después)
+        assertTrue(recording.cornerPoints.all { c -> recording.track.any { Geometry.euclidean(it, c) < 1e-6 } })
         assertEquals(GpsPhase.FINISHED, done.phase)
         assertEquals(4, done.polygon.size)
         assertTrue(errors.all { it < 3.0 })

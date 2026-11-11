@@ -94,4 +94,38 @@ class GpsInicioTest {
         assertTrue(runs.all { it.endErrorM < 4.0 })
         assertTrue(runs.all { it.areaErrPct < 10.0 })
     }
+    @Test
+    @Evidencia(
+        id = "FU-85", nombre = "La partida queda fija mientras se recorre", requisito = "RF-08 / RF-19",
+        objetivo = "Verificar que el punto de partida (medido quieto al inicio) no se mueve cuando el GPS corrige el "
+            + "giro y la escala de los pasos: así, al volver a la partida, la figura cierra en ella.",
+        entrada = "Rectángulo 40 × 30 m con brújula desviada 15° y paso real 0,77 m; GPS con un sesgo de 4 m al este; 5 semillas",
+        esperado = "El primer punto del trazo queda en (0; 0) en todo momento y al volver a la partida el trazo termina a < 5 m de ella",
+    )
+    fun partidaFija() {
+        var maxStartMove = 0.0
+        var maxEnd = 0.0
+        for (seed in 1L..5L) {
+            val rnd = Random(seed)
+            val f = PdrGpsFusion(0.70, 2.0)
+            val corners = listOf(Point(0.0, 0.0), Point(0.0, 40.0), Point(30.0, 40.0), Point(30.0, 0.0), Point(0.0, 0.0))
+            var truth = Point(0.0, 0.0)
+            var steps = 0
+            for ((a, b) in corners.zipWithNext()) {
+                val heading = Math.atan2(b.x - a.x, b.y - a.y)
+                repeat((Geometry.euclidean(a, b) / 0.77).toInt()) {
+                    f.onStep(heading + Math.toRadians(15.0))
+                    truth = Point(truth.x + 0.77 * sin(heading), truth.y + 0.77 * cos(heading))
+                    if (++steps % 2 == 0) f.onGps(Point(truth.x + 4.0 + rnd.nextGaussian() * 3, truth.y + rnd.nextGaussian() * 3), 4.5)
+                    maxStartMove = maxOf(maxStartMove, Geometry.euclidean(f.track().first(), Point(0.0, 0.0)))
+                }
+            }
+            f.settle()
+            maxStartMove = maxOf(maxStartMove, Geometry.euclidean(f.track().first(), Point(0.0, 0.0)))
+            maxEnd = maxOf(maxEnd, Geometry.euclidean(f.track().last(), Point(0.0, 0.0)))
+        }
+        ev.obtenido = "movimiento máx. de la partida=${"%.3f".format(maxStartMove)} m, final a ${"%.2f".format(maxEnd)} m de la partida"
+        assertTrue(maxStartMove < 1e-6)
+        assertTrue(maxEnd < 5.0)
+    }
 }
