@@ -77,9 +77,20 @@ data class JoinInput(
     val door: String? = null,
 )
 
+/** Contorno de la casa frente a la suma de los ambientes: la diferencia es el área de los muros y el error. */
+data class ContourComparison(
+    val contourAreaM2: Double,
+    val contourPerimeterM: Double,
+    val roomsAreaM2: Double,
+    val differenceM2: Double,
+    val differencePct: Double,
+)
+
 data class HouseUiState(
-    /** Ambientes interiores del proyecto guardados en el celular. */
+    /** Ambientes interiores del proyecto guardados en el celular (sin el contorno de la casa). */
     val rooms: List<LocalSurvey> = emptyList(),
+    /** Contorno de toda la casa (medido caminando su borde), para comparar con la suma de los ambientes. */
+    val contour: LocalSurvey? = null,
     /** Ambientes elegidos, en orden: el primero es la base. */
     val selected: List<Long> = emptyList(),
     val joins: List<JoinInput> = emptyList(),
@@ -104,10 +115,33 @@ class HouseViewModel(
     init {
         viewModelScope.launch {
             surveys.observeLocal(projectId).collect { list ->
-                val rooms = list.filter { it.mode == SurveyMode.INTERIOR && it.vertices.size >= 3 }.sortedBy { it.createdAt }
-                _state.update { it.copy(rooms = rooms) }
+                val interior = list.filter { it.mode == SurveyMode.INTERIOR && it.vertices.size >= 3 }.sortedBy { it.createdAt }
+                // El contorno se reconoce por su nombre («Contorno de la casa»); si hay varios, el más reciente
+                val contour = interior.lastOrNull { it.name.trim().lowercase().startsWith(CONTOUR_PREFIX) }
+                _state.update { s ->
+                    s.copy(
+                        rooms = interior.filter { it.id != contour?.id },
+                        contour = contour,
+                        selected = s.selected.filter { it != contour?.id },
+                    )
+                }
             }
         }
+    }
+
+    /**
+     * Compara el contorno con la suma de los ambientes elegidos (o de todos, si no se eligió ninguno).
+     * Null si todavía no se midió el contorno.
+     */
+    fun comparison(): ContourComparison? {
+        val s = _state.value
+        val contour = s.contour ?: return null
+        val rooms = if (s.selected.isEmpty()) s.rooms else s.selected.mapNotNull { s.room(it) }
+        val sum = rooms.sumOf { it.areaM2 }
+        val diff = contour.areaM2 - sum
+        return ContourComparison(
+            contour.areaM2, contour.perimeterM, sum, diff, if (contour.areaM2 > 0) 100 * diff / contour.areaM2 else 0.0,
+        )
     }
 
     // Cambiar ambientes o uniones borra la planta anterior: ya no corresponde
@@ -214,13 +248,17 @@ class HouseViewModel(
 
         fun dxfFileName(projectId: Int) = "metrik_vivienda_$projectId.dxf"
 
+        /** Nombre con el que se guarda el contorno de la casa (la pantalla de medición lo trae escrito). */
+        const val CONTOUR_NAME = "Contorno de la casa"
+        private const val CONTOUR_PREFIX = "contorno"
+
         /** Acepta coma o punto decimal ("0,15" o "0.15"). */
         private fun number(text: String): Double? = text.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() }
     }
 }
 
 @Composable
-fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit) {
+fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit, onMeasureContour: () -> Unit = {}) {
     val s by vm.state.collectAsStateWithLifecycle()
     Scaffold(topBar = { MetrikTopBar("Plano de vivienda", onBack = onBack) }) { padding ->
         Column(
@@ -250,6 +288,8 @@ fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit) {
                 }
             }
 
+            ContourSection(s, vm.comparison(), onMeasureContour)
+
             Text("Muros compartidos", style = MaterialTheme.typography.titleSmall)
             if (vm.canAutoJoin) {
                 Button(onClick = vm::autoJoin, enabled = !s.busy, modifier = Modifier.fillMaxWidth().testTag("house_auto")) {
@@ -271,6 +311,33 @@ fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().testTag("house_dxf"),
             ) { Text("Descargar DXF de la vivienda") }
         }
+    }
+}
+
+/** Contorno de toda la casa: se mide caminando su borde y se compara con la suma de los ambientes. */
+@Composable
+private fun ContourSection(s: HouseUiState, c: ContourComparison?, onMeasure: () -> Unit) {
+    Text("Contorno de la casa", style = MaterialTheme.typography.titleSmall)
+    if (c == null) {
+        Text(
+            "Camina el borde de toda la casa para comparar su área con la suma de los ambientes medidos.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    } else {
+        val chosen = if (s.selected.isEmpty()) "todos los ambientes" else "los ambientes elegidos"
+        StatRow("Contorno", String.format(Locale.US, "%.2f m² · %.2f m", c.contourAreaM2, c.contourPerimeterM))
+        StatRow("Suma de $chosen", String.format(Locale.US, "%.2f m²", c.roomsAreaM2))
+        StatRow(
+            "Diferencia", String.format(Locale.US, "%.2f m² (%.1f %%)", c.differenceM2, c.differencePct),
+            Modifier.testTag("house_contour_diff"),
+        )
+        Text(
+            "La diferencia corresponde a los muros y al error de medición. Si es negativa o muy grande, revisa las medidas.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    OutlinedButton(onClick = onMeasure, modifier = Modifier.fillMaxWidth().testTag("house_measure_contour")) {
+        Text(if (c == null) "Medir contorno de la casa" else "Volver a medir el contorno")
     }
 }
 

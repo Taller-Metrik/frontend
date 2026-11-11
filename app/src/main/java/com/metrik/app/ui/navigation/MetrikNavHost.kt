@@ -52,7 +52,7 @@ object Routes {
     const val PROJECTS = "projects"
     const val SETTINGS = "settings"
     const val PROJECT = "project/{id}/{name}"
-    const val MEASURE = "measure/{projectId}"
+    const val MEASURE = "measure/{projectId}?name={name}"
     const val GPS = "gps/{projectId}"
     const val PLAN = "plan/{localId}"
     const val VALIDATION = "validation/{localId}"
@@ -68,7 +68,7 @@ object Routes {
     fun house(projectId: Int) = "house/$projectId"
 
     fun project(id: Int, name: String) = "project/$id/${Uri.encode(name)}"
-    fun measure(projectId: Int) = "measure/$projectId"
+    fun measure(projectId: Int, name: String = "") = "measure/$projectId?name=${android.net.Uri.encode(name)}"
     fun gps(projectId: Int) = "gps/$projectId"
     fun plan(localId: Long) = "plan/$localId"
     fun validation(localId: Long) = "validation/$localId"
@@ -125,13 +125,21 @@ fun MetrikNavHost(container: AppContainer) {
                 onHousePlan = { nav.navigate(Routes.house(id)) },
             )
         }
-        composable(Routes.MEASURE, arguments = listOf(navArgument("projectId") { type = NavType.IntType })) { entry ->
+        composable(
+            Routes.MEASURE,
+            arguments = listOf(
+                navArgument("projectId") { type = NavType.IntType },
+                navArgument("name") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { entry ->
             val projectId = entry.arguments!!.getInt("projectId")
+            val initialName = entry.arguments?.getString("name").orEmpty()
             val vm = viewModel { MeasureViewModel(projectId, container.surveys) }
             MeasureScreen(
                 vm, session.odometryMode, container.heading, container.odometryOverride, session.stepLengthM,
                 onBack = { nav.popBackStack() },
                 onSaved = { localId -> nav.navigate(Routes.plan(localId)) { popUpTo(Routes.MEASURE) { inclusive = true } } },
+                initialName = initialName,
             )
         }
         composable(Routes.GPS, arguments = listOf(navArgument("projectId") { type = NavType.IntType })) { entry ->
@@ -173,7 +181,10 @@ fun MetrikNavHost(container: AppContainer) {
                     saveToDownloads(context, name, bytes, mimeTypeFor(name))
                 }
             }
-            HouseScreen(vm, onBack = { nav.popBackStack() })
+            HouseScreen(
+                vm, onBack = { nav.popBackStack() },
+                onMeasureContour = { nav.navigate(Routes.measure(projectId, HouseViewModel.CONTOUR_NAME)) },
+            )
         }
         composable(Routes.FINISHES, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
             val localId = entry.arguments!!.getLong("localId")

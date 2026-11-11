@@ -99,6 +99,8 @@ fun MeasureScreen(
     stepLengthM: Double = 0.70,
     onBack: () -> Unit,
     onSaved: (Long) -> Unit,
+    /** Nombre ya escrito al guardar (p. ej. «Contorno de la casa»). */
+    initialName: String = "",
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -353,7 +355,7 @@ fun MeasureScreen(
                                 "El recorrido no terminó en el punto de inicio: se cerró automáticamente (EX-01)",
                                 color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
                             )
-                            var name by rememberSaveable { mutableStateOf("") }
+                            var name by rememberSaveable { mutableStateOf(initialName) }
                             OutlinedTextField(
                                 name, { name = it }, label = { Text("Nombre del ambiente") }, singleLine = true,
                                 modifier = Modifier.fillMaxWidth().testTag("survey_name"),
