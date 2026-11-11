@@ -3,10 +3,13 @@ package com.metrik.app.data
 import com.metrik.app.core.geometry.Point
 import com.metrik.app.data.remote.ApiClient
 import com.metrik.app.data.remote.FenceInDto
+import com.metrik.app.data.remote.FloorJoinDto
+import com.metrik.app.data.remote.FloorPlanInDto
 import com.metrik.app.data.remote.GateDto
 import com.metrik.app.data.remote.userMessage
 import com.metrik.app.data.repository.DefaultAuthRepository
 import com.metrik.app.data.repository.DefaultFenceRepository
+import com.metrik.app.data.repository.DefaultFloorPlanRepository
 import com.metrik.app.data.repository.DefaultPlanRepository
 import com.metrik.app.data.repository.DefaultProjectRepository
 import com.metrik.app.data.repository.DefaultSurveyRepository
@@ -256,5 +259,27 @@ class ApiIntegrationTest {
         assertEquals("/api/v1/surveys/18", r.url.encodedPath)
         assertEquals(vacia, id)
         assertEquals(5, s.vertices.size)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FI-13", nombre = "Plano de vivienda por la API", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar el JSON del plano de vivienda y la lectura de los ambientes ubicados y las advertencias.",
+        entrada = "POST /projects/7/floor-plan con 2 ambientes y una unión; respuesta simulada",
+        esperado = "JSON con rooms, joins[a_survey, a_wall, b_survey, b_wall, thickness_m]; respuesta con vértices, área total y advertencia",
+    )
+    fun planoVivienda() = runBlocking {
+        server.enqueue(json(200, """{"project_id":7,"rooms":[{"survey_id":41,"name":"Sala","vertices":[[0,0],[4,0],[4,3],[0,3]],"area_m2":12.0}],
+            "total_area_m2":12.0,"warnings":["El ambiente «Cocina» está sin unir: no se incluye en la planta."]}"""))
+        val out = DefaultFloorPlanRepository(api).plan(7, FloorPlanInDto(listOf(41, 42), listOf(FloorJoinDto(41, 1, 42, 3, 0.15))))
+        val req = server.takeRequest()
+        val body = req.body!!.utf8()
+        ev.obtenido = "${req.method} ${req.url.encodedPath} $body → ambientes=${out.rooms.size}, advertencias=${out.warnings}"
+        assertEquals("POST", req.method)
+        assertTrue(req.url.encodedPath.endsWith("/projects/7/floor-plan"))
+        assertTrue("\"rooms\":[41,42]" in body && "\"a_wall\":1" in body && "\"thickness_m\":0.15" in body)
+        assertEquals(4, out.rooms.single().vertices.size)
+        assertEquals(12.0, out.totalAreaM2, 1e-9)
+        assertEquals(1, out.warnings.size)
     }
 }
