@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -55,9 +56,10 @@ class FinishesViewModelTest {
     @Test
     @Evidencia(
         id = "FU-56", nombre = "Calcular el metrado de acabados desde la app", requisito = "RF-22 (CU-07)",
-        objetivo = "Verificar que la pantalla sincroniza el ambiente y envía altura, vanos y precios de mano de obra válidos.",
-        entrada = "Altura '2,60'; puerta 0,90×2,10 en el muro 1; mano de obra piso '25' y tarrajeo 'x'",
-        esperado = "Petición con height_m=2.6, 1 vano tipo door, labor_prices={floor_m2=25.0}; resultado mostrado",
+        objetivo = "Verificar que la pantalla sincroniza el ambiente y envía altura y vanos; el presupuesto es solo de "
+            + "materiales, así que no se envían precios de mano de obra.",
+        entrada = "Altura '2,60'; puerta 0,90×2,10 en el muro 1",
+        esperado = "Petición con height_m=2.6, 1 vano tipo door y sin labor_prices; resultado mostrado",
     )
     fun calcularAcabados() = runBlocking {
         val repo = FakeSurveyRepository()
@@ -66,7 +68,6 @@ class FinishesViewModelTest {
         withTimeout(5_000) { vm.state.first { it.survey != null } }
         vm.setHeight("2,60")
         vm.addOpening("door"); vm.updateOpening(0, wall = 0, kind = "door", width = "0,90", height = "2,10")
-        vm.setLabor("floor_m2", "25"); vm.setLabor("plaster_m2", "x")
         vm.calculate()
         val s = withTimeout(5_000) { vm.state.first { it.result != null || it.error != null } }
         val body = fin.requests.single().second
@@ -74,7 +75,8 @@ class FinishesViewModelTest {
         assertEquals(2.6, body.heightM, 1e-9)
         assertEquals("door", body.openings.single().kind)
         assertEquals(0.9, body.openings.single().widthM, 1e-9)
-        assertEquals(mapOf("floor_m2" to 25.0), body.laborPrices)
+        val json = com.metrik.app.data.remote.MetrikJson.encodeToString(com.metrik.app.data.remote.FinishesInDto.serializer(), body)
+        assertFalse(json.contains("labor_prices"))
         assertNotNull(s.result)
     }
 

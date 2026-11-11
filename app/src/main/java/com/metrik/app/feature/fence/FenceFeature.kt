@@ -271,7 +271,7 @@ private fun FenceResult(r: FenceOutDto, s: FenceUiState, vm: FenceViewModel) {
 private fun ItemRow(item: TakeoffItemDto, s: FenceUiState, vm: FenceViewModel) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(8.dp)) {
-            Text(item.description + if (item.priceable) "" else " (desglose)", style = MaterialTheme.typography.bodyMedium)
+            Text(item.description + if (item.priceable) "" else " (sin precio)", style = MaterialTheme.typography.bodyMedium)
             Text(
                 "${item.quantity.qty(item.unit)} · rango ${item.min.qty(item.unit)} – ${item.max.qty(item.unit)} · " +
                     "comprar ${item.purchase.qty(item.unit)}",

@@ -53,20 +53,10 @@ import java.util.Locale
 /** Vano tal como lo escribe el usuario: muro (0 = del vértice 1 al 2), tipo y medidas en texto. */
 data class OpeningInput(val wall: Int = 0, val kind: String = "door", val width: String = "0.90", val height: String = "2.10")
 
-/** Partidas de mano de obra: el usuario pone su precio por m² o por metro. */
-val LABOR = listOf(
-    "floor_m2" to "Piso (S/ por m²)",
-    "baseboard_m" to "Contrazócalo (S/ por m)",
-    "plaster_m2" to "Tarrajeo (S/ por m²)",
-    "wall_paint_m2" to "Pintura de muros (S/ por m²)",
-    "ceiling_paint_m2" to "Pintura de cielo raso (S/ por m²)",
-)
-
 data class FinishesUiState(
     val survey: LocalSurvey? = null,
     val height: String = "2.50",
     val openings: List<OpeningInput> = emptyList(),
-    val labor: Map<String, String> = emptyMap(),
     val prices: List<PriceDto> = emptyList(),
     val result: FinishesOutDto? = null,
     val busy: Boolean = false,
@@ -104,7 +94,6 @@ class FinishesViewModel(
     fun updateOpening(i: Int, wall: Int, kind: String, width: String, height: String) = edit {
         it.copy(openings = it.openings.mapIndexed { k, o -> if (k == i) OpeningInput(wall, kind, width, height) else o })
     }
-    fun setLabor(key: String, text: String) = edit { it.copy(labor = it.labor + (key to text)) }
 
     fun loadPrices() = busy { _state.update { it.copy(prices = repo.prices()) } }
 
@@ -141,8 +130,7 @@ class FinishesViewModel(
             val h = number(o.height)?.takeIf { it > 0 } ?: error("El alto del vano ${i + 1} debe ser un número mayor que 0")
             OpeningDto(o.wall, o.kind, w, h)
         }
-        val labor = s.labor.mapNotNull { (k, v) -> number(v)?.takeIf { it >= 0 }?.let { k to it } }.toMap()
-        return FinishesInDto(heightM = height, openings = openings, laborPrices = labor.ifEmpty { null })
+        return FinishesInDto(heightM = height, openings = openings)
     }
 
     private fun busy(block: suspend () -> Unit) {
@@ -188,17 +176,10 @@ fun FinishesScreen(vm: FinishesViewModel, onBack: () -> Unit) {
                 OutlinedButton(onClick = { vm.addOpening("window") }, enabled = s.walls >= 3) { Text("Agregar ventana") }
             }
 
-            Text("Mano de obra (opcional)", style = MaterialTheme.typography.titleSmall)
-            LABOR.forEach { (key, label) ->
-                OutlinedTextField(
-                    s.labor[key].orEmpty(), { vm.setLabor(key, it) }, Modifier.fillMaxWidth(),
-                    label = { Text(label) }, singleLine = true, keyboardOptions = decimal,
-                )
-            }
             Button(
                 onClick = vm::calculate, enabled = !s.busy && s.survey != null,
                 modifier = Modifier.fillMaxWidth().testTag("finishes_calculate"),
-            ) { Text("Calcular metrado y presupuesto") }
+            ) { Text("Calcular metrado y presupuesto de materiales") }
 
             s.result?.let { FinishesResult(it) }
             HorizontalDivider()
@@ -235,7 +216,7 @@ private fun OpeningCard(i: Int, o: OpeningInput, walls: Int, vm: FinishesViewMod
 private fun FinishesResult(r: FinishesOutDto) {
     HorizontalDivider()
     Text("Metrado", style = MaterialTheme.typography.titleSmall)
-    r.items.forEach { StatRow(it.description, it.quantity.qty(it.unit)) }
+    r.items.forEach { StatRow(it.description + if (it.priceable) "" else " (sin precio)", it.quantity.qty(it.unit)) }
     r.notes.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
     r.budget?.let { b ->
         Text("Presupuesto", style = MaterialTheme.typography.titleSmall)
@@ -249,7 +230,7 @@ private fun FinishesResult(r: FinishesOutDto) {
         if (b.missingPrices.isNotEmpty()) {
             Text(
                 "Sin precio (no incluidas en el total): ${b.missingLabels(r.items).joinToString()}. " +
-                    "Ponles tu precio en «Precios de materiales» o en la mano de obra.",
+                    "Ponles tu precio en «Precios de materiales».",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
             )
         }
