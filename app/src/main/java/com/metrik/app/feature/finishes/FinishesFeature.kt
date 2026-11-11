@@ -36,6 +36,7 @@ import com.metrik.app.data.remote.FinishesInDto
 import com.metrik.app.data.remote.FinishesOutDto
 import com.metrik.app.data.remote.OpeningDto
 import com.metrik.app.data.remote.PriceDto
+import com.metrik.app.data.remote.missingLabels
 import com.metrik.app.data.remote.userMessage
 import com.metrik.app.data.repository.FinishesRepository
 import com.metrik.app.data.repository.SurveyRepository
@@ -91,16 +92,19 @@ class FinishesViewModel(
         loadPrices()
     }
 
-    fun setHeight(v: String) = _state.update { it.copy(height = v) }
-    fun addOpening(kind: String) = _state.update {
+    // Cualquier cambio de los datos o de los precios borra el metrado y el presupuesto anteriores: ya no corresponden
+    private fun edit(change: (FinishesUiState) -> FinishesUiState) = _state.update { change(it).copy(result = null) }
+
+    fun setHeight(v: String) = edit { it.copy(height = v) }
+    fun addOpening(kind: String) = edit {
         val new = if (kind == "door") OpeningInput() else OpeningInput(kind = "window", width = "1.20", height = "1.00")
         it.copy(openings = it.openings + new)
     }
-    fun removeOpening(i: Int) = _state.update { it.copy(openings = it.openings.filterIndexed { k, _ -> k != i }) }
-    fun updateOpening(i: Int, wall: Int, kind: String, width: String, height: String) = _state.update {
+    fun removeOpening(i: Int) = edit { it.copy(openings = it.openings.filterIndexed { k, _ -> k != i }) }
+    fun updateOpening(i: Int, wall: Int, kind: String, width: String, height: String) = edit {
         it.copy(openings = it.openings.mapIndexed { k, o -> if (k == i) OpeningInput(wall, kind, width, height) else o })
     }
-    fun setLabor(key: String, text: String) = _state.update { it.copy(labor = it.labor + (key to text)) }
+    fun setLabor(key: String, text: String) = edit { it.copy(labor = it.labor + (key to text)) }
 
     fun loadPrices() = busy { _state.update { it.copy(prices = repo.prices()) } }
 
@@ -110,10 +114,10 @@ class FinishesViewModel(
             _state.update { it.copy(error = "El precio debe ser un número mayor o igual que 0") }
             return
         }
-        busy { repo.setPrice(key, price); _state.update { it.copy(prices = repo.prices()) } }
+        busy { repo.setPrice(key, price); val prices = repo.prices(); edit { it.copy(prices = prices) } }
     }
 
-    fun resetPrice(key: String) = busy { repo.resetPrice(key); _state.update { it.copy(prices = repo.prices()) } }
+    fun resetPrice(key: String) = busy { repo.resetPrice(key); val prices = repo.prices(); edit { it.copy(prices = prices) } }
 
     fun calculate() {
         val s = _state.value
@@ -239,8 +243,16 @@ private fun FinishesResult(r: FinishesOutDto) {
         StatRow("Costo directo", b.directCost.soles())
         StatRow("Gastos generales (${b.overheadPct.toInt()} %)", b.overhead.soles())
         StatRow("Utilidad (${b.profitPct.toInt()} %)", b.profit.soles())
+        StatRow("Subtotal", b.subtotal.soles())
         StatRow("IGV (${b.igvPct.toInt()} %)", b.igv.soles())
         StatRow("Total", b.total.soles(), Modifier.testTag("finishes_total"))
+        if (b.missingPrices.isNotEmpty()) {
+            Text(
+                "Sin precio (no incluidas en el total): ${b.missingLabels(r.items).joinToString()}. " +
+                    "Ponles tu precio en «Precios de materiales» o en la mano de obra.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+            )
+        }
     }
     Text("Supuestos", style = MaterialTheme.typography.titleSmall)
     r.assumptions.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
