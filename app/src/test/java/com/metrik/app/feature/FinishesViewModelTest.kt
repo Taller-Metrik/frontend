@@ -29,7 +29,7 @@ class FinishesViewModelTest {
     @get:Rule val ev = EvidenceRule()
     @get:Rule val main = MainDispatcherRule()
 
-    private class FakeFinishes : FinishesRepository {
+    private class FakeFinishes(private val extra: List<PriceDto> = emptyList()) : FinishesRepository {
         val requests = mutableListOf<Pair<Int, FinishesInDto>>()
         val own = mutableMapOf<String, Double>()
         override suspend fun finishes(remoteId: Int, body: FinishesInDto): FinishesOutDto {
@@ -40,7 +40,7 @@ class FinishesViewModelTest {
         override suspend fun prices(): List<PriceDto> = listOf(
             PriceDto("cement_bag", "Cemento", "bolsa", 42.5, "kg", own["cement_bag"] ?: 30.9,
                 if ("cement_bag" in own) "user" else "store", 30.9, "Promart", "Cemento Sol", null, "2026-11-10T11:00:00Z", "ok"),
-        )
+        ) + extra
         override suspend fun setPrice(key: String, price: Double) { own[key] = price }
         override suspend fun resetPrice(key: String) { own.remove(key) }
     }
@@ -148,5 +148,30 @@ class FinishesViewModelTest {
         ev.obtenido = "resultado tras altura=$tras1, tras precio=$tras2"
         assertNull(tras1)
         assertNull(tras2)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-94", nombre = "Acabados interiores sin materiales del cerco", requisito = "RF-23 (CU-07)",
+        objetivo = "Verificar que la pantalla de acabados (medición interior) solo lista los precios de los insumos de "
+            + "acabados, no los del cerco perimétrico (madera, alambre de púas, grapas, piedra, ladrillo, fierro), que son "
+            + "de la medición exterior con GPS.",
+        entrada = "Catálogo de la tienda con cemento, porcelanato, pintura, madera pino, alambre de púas, grapas, piedra "
+            + "chancada, arena gruesa, ladrillo King Kong y fierro 3/8\"",
+        esperado = "Se listan cemento, porcelanato y pintura; ninguno del cerco",
+    )
+    fun soloInsumosDeAcabados() = runBlocking {
+        fun price(key: String, desc: String) = PriceDto(key, desc, "und", 1.0, "und", 10.0, "store", 10.0, "Promart", desc, null, "2026-11-10T11:00:00Z", "ok")
+        val cerco = listOf(
+            price("pine_post", "Madera pino"), price("barbed_wire_roll", "Alambre de púas"), price("staples_bag", "Grapas"),
+            price("stone_bag", "Piedra chancada"), price("sand_bag", "Arena gruesa"), price("brick_kk18", "Ladrillo King Kong"),
+            price("rebar_3_8", "Fierro 3/8"),
+        )
+        val repo = FakeSurveyRepository()
+        val fin = FakeFinishes(listOf(price("porcelain_box", "Porcelanato"), price("paint_gallon", "Pintura")) + cerco)
+        val vm = FinishesViewModel(aula(repo), repo, fin)
+        val shown = withTimeout(5_000) { vm.state.first { it.prices.isNotEmpty() && !it.busy } }.prices.map { it.key }
+        ev.obtenido = "listados=$shown"
+        assertEquals(setOf("cement_bag", "porcelain_box", "paint_gallon"), shown.toSet())
     }
 }
