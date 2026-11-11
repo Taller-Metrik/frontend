@@ -128,10 +128,13 @@ object HouseLayout {
                     val b1 = bWorld[(j + 1) % bWorld.size]
                     val lb = hypot(b1.x - b0.x, b1.y - b0.y)
                     if (lb < 1e-6) continue
-                    // Muros enfrentados: el de B va en sentido contrario al de A
+                    // Muros paralelos: van en sentido contrario si los dos ambientes se recorrieron en el mismo sentido,
+                    // o en el mismo si uno se recorrió horario y el otro antihorario. Se gira lo mínimo (± 90°).
                     val angA = atan2(uy, ux)
                     val angB = atan2(b1.y - b0.y, b1.x - b0.x)
-                    val delta = normalize(angA + PI - angB)
+                    var delta = normalize(angA + PI - angB)
+                    if (delta > PI / 2) delta -= PI
+                    if (delta < -PI / 2) delta += PI
                     if (Math.toDegrees(abs(delta)) > SNAP_ANGLE_DEG) continue
                     val mb = Point((b0.x + b1.x) / 2, (b0.y + b1.y) / 2)
                     val perp = (mb.x - a0.x) * nx + (mb.y - a0.y) * ny
