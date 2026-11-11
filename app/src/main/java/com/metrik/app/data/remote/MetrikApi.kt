@@ -57,6 +57,20 @@ interface MetrikApi {
     @POST("surveys/{id}/fence")
     suspend fun fence(@Path("id") id: Int, @Body body: FenceInDto): FenceOutDto
 
+    /** Metrado de acabados con presupuesto (CU-07, RF-22, RF-24). */
+    @POST("surveys/{id}/finishes")
+    suspend fun finishes(@Path("id") id: Int, @Body body: FinishesInDto): FinishesOutDto
+
+    /** Catálogo de precios: el propio del usuario o el de la tienda (RF-23). */
+    @GET("prices")
+    suspend fun prices(): List<PriceDto>
+
+    @PUT("prices/{key}")
+    suspend fun setPrice(@Path("key") key: String, @Body body: PriceInDto): PriceDto
+
+    @DELETE("prices/{key}")
+    suspend fun resetPrice(@Path("key") key: String): Response<Unit>
+
     @GET("surveys/{id}/ml")
     suspend fun ml(@Path("id") id: Int): MlAnalysisDto
 

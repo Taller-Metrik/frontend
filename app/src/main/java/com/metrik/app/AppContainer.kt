@@ -44,6 +44,9 @@ class AppContainer(context: Context) {
     val fences: com.metrik.app.data.repository.FenceRepository by lazy {
         com.metrik.app.data.repository.DefaultFenceRepository(api)
     }
+    val finishes: com.metrik.app.data.repository.FinishesRepository by lazy {
+        com.metrik.app.data.repository.DefaultFinishesRepository(api)
+    }
     val validation: ValidationRepository by lazy { DefaultValidationRepository(api) }
     val calibrations: com.metrik.app.data.repository.CalibrationRepository by lazy {
         com.metrik.app.data.repository.DefaultCalibrationRepository(api)

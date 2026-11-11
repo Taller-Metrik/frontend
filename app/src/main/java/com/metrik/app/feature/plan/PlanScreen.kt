@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
@@ -65,6 +66,7 @@ fun PlanScreen(
     onDashboard: (Long) -> Unit = {},
     onGpsReference: (Long) -> Unit = {},
     onFence: (Long) -> Unit = {},
+    onFinishes: (Long) -> Unit = {},
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -179,6 +181,13 @@ fun PlanScreen(
                 onClick = vm::exportReport, enabled = !s.busy,
                 modifier = Modifier.fillMaxWidth().testTag("plan_report"),
             ) { Icon(Icons.Filled.Description, null); Spacer(Modifier.width(4.dp)); Text("Informe técnico (PDF)") }
+            // Metrado de acabados (CU-07): solo para ambientes interiores
+            if (survey.mode == SurveyMode.INTERIOR) {
+                OutlinedButton(
+                    onClick = { onFinishes(survey.id) }, enabled = !s.busy,
+                    modifier = Modifier.fillMaxWidth().testTag("plan_finishes"),
+                ) { Icon(Icons.Filled.Calculate, null); Spacer(Modifier.width(4.dp)); Text("Metrado de acabados y presupuesto") }
+            }
             // Cerco perimétrico (CU-09): solo para terrenos medidos con GPS
             if (survey.mode == SurveyMode.EXTERIOR) {
                 OutlinedButton(

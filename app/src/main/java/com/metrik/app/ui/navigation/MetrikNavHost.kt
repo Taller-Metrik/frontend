@@ -32,6 +32,8 @@ import com.metrik.app.feature.plan.PlanScreen
 import com.metrik.app.feature.plan.PlanViewModel
 import com.metrik.app.feature.fence.FenceScreen
 import com.metrik.app.feature.fence.FenceViewModel
+import com.metrik.app.feature.finishes.FinishesScreen
+import com.metrik.app.feature.finishes.FinishesViewModel
 import com.metrik.app.feature.plan.mimeTypeFor
 import com.metrik.app.feature.plan.saveToDownloads
 import com.metrik.app.feature.projects.ProjectDetailScreen
@@ -58,6 +60,8 @@ object Routes {
     fun gpsReference(localId: Long) = "gps-reference/$localId"
     const val FENCE = "fence/{localId}"
     fun fence(localId: Long) = "fence/$localId"
+    const val FINISHES = "finishes/{localId}"
+    fun finishes(localId: Long) = "finishes/$localId"
 
     fun project(id: Int, name: String) = "project/$id/${Uri.encode(name)}"
     fun measure(projectId: Int) = "measure/$projectId"
@@ -149,12 +153,18 @@ fun MetrikNavHost(container: AppContainer) {
                 onDashboard = { nav.navigate(Routes.dashboard(it)) },
                 onGpsReference = { nav.navigate(Routes.gpsReference(it)) },
                 onFence = { nav.navigate(Routes.fence(it)) },
+                onFinishes = { nav.navigate(Routes.finishes(it)) },
             )
         }
         composable(Routes.FENCE, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
             val localId = entry.arguments!!.getLong("localId")
             val vm = viewModel { FenceViewModel(localId, container.surveys, container.fences) }
             FenceScreen(vm, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.FINISHES, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
+            val localId = entry.arguments!!.getLong("localId")
+            val vm = viewModel { FinishesViewModel(localId, container.surveys, container.finishes) }
+            FinishesScreen(vm, onBack = { nav.popBackStack() })
         }
         composable(Routes.VALIDATION, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
             val localId = entry.arguments!!.getLong("localId")
