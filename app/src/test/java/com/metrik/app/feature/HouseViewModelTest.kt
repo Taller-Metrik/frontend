@@ -207,4 +207,55 @@ class HouseViewModelTest {
         assertNotNull(join.aPoint)
         assertNotNull(join.bPoint)
     }
+    @Test
+    @Evidencia(
+        id = "FU-91", nombre = "Al separar dos ambientes se borra su unión", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar que, si un ambiente pegado se arrastra lejos (o se gira) y ya no toca al otro, su unión se "
+            + "borra sola: la planta no se arma con uniones viejas (en campo la cocina aparecía pegada a la sala).",
+        entrada = "Cocina pegada a la sala con imán; luego la cocina se arrastra 3 m hacia abajo y se suelta lejos",
+        esperado = "1 unión tras pegarla; 0 uniones tras separarla, con un aviso",
+    )
+    fun separarBorraUnion() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val (sala, cocina, _) = casa(repo)
+        val vm = HouseViewModel(7, repo, FakeFloorPlans()) { name, _ -> name }
+        withTimeout(5_000) { vm.state.first { it.rooms.size == 2 } }
+        vm.toggleRoom(sala); vm.toggleRoom(cocina)
+        vm.moveRoom(cocina, -0.7, 0.2); vm.dropRoom(cocina)
+        val pegadas = vm.state.value.joins.size
+        vm.moveRoom(cocina, 0.0, -5.0); vm.dropRoom(cocina)
+        val s = vm.state.value
+        ev.obtenido = "uniones al pegar=$pegadas, al separar=${s.joins.size}, aviso=${s.message}"
+        assertEquals(1, pegadas)
+        assertTrue(s.joins.isEmpty())
+        assertNotNull(s.message)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-92", nombre = "La planta armada se ve como el panel", requisito = "RF-25 (CU-08)",
+        objetivo = "Verificar que la planta que devuelve el servidor (en la orientación original de la medición) se "
+            + "muestra girada y ubicada como el ambiente base en el panel (enderezado), no en diagonal.",
+        entrada = "Ambiente base girado 90° en el panel; el servidor devuelve su triángulo sin girar",
+        esperado = "El triángulo mostrado coincide con el del panel (mismos vértices ± 1 mm)",
+    )
+    fun plantaComoElPanel() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val (sala, _, _) = casa(repo)
+        val vm = HouseViewModel(7, repo, FakeFloorPlans()) { name, _ -> name }
+        withTimeout(5_000) { vm.state.first { it.rooms.size == 2 } }
+        vm.toggleRoom(sala)
+        vm.rotateRoom(sala, 90.0)
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        val s = vm.state.value
+        val shown = vm.alignedResult()!!.single().vertices
+        val tri = listOf(Point(0.0, 0.0), Point(4.0, 0.0), Point(4.0, 3.0))
+        val expected = tri.map { com.metrik.app.feature.house.HouseLayout.toWorld(it, s.room(sala)!!.vertices, s.poses.getValue(sala)) }
+        ev.obtenido = "mostrado=$shown, esperado=$expected"
+        shown.zip(expected).forEach { (a, e) ->
+            assertEquals(e.x, a[0], 1e-3)
+            assertEquals(e.y, a[1], 1e-3)
+        }
+    }
 }
