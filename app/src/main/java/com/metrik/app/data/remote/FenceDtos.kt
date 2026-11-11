@@ -63,6 +63,10 @@ data class BudgetDto(
     val currency: String = "PEN",
 )
 
+/** Partidas que quedaron fuera del presupuesto por no tener precio, con su descripción (o su clave si no se conoce). */
+fun BudgetDto.missingLabels(items: List<TakeoffItemDto>): List<String> =
+    missingPrices.map { key -> items.firstOrNull { it.key == key }?.description ?: key }
+
 @Serializable
 data class FenceOutDto(
     @SerialName("survey_id") val surveyId: Int,
