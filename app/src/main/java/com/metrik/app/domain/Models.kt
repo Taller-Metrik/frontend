@@ -11,8 +11,24 @@ enum class SurveyMode(val api: String, val label: String) {
 @Serializable
 data class GpsSample(val lat: Double, val lon: Double, val accuracyM: Double, val timestampS: Double)
 
+/** Puerta marcada al medir («Puerta aquí»): nombre del ambiente al que lleva y posición en el recorrido (m). */
 @Serializable
-data class CaptureInfo(val odometry: String, val trackingLossS: Double, val durationS: Double, val transport: String? = null)
+data class DoorMark(val name: String, val x: Double, val y: Double)
+
+/**
+ * Metadatos de la medición. [doors] y [startDoor] sirven para unir los ambientes automáticamente
+ * (CU-08): las puertas marcadas en un ambiente de referencia (el pasillo) y la puerta en la que empezó
+ * este ambiente. Solo se guardan en el celular: al backend se envían los puntos al armar la planta.
+ */
+@Serializable
+data class CaptureInfo(
+    val odometry: String,
+    val trackingLossS: Double,
+    val durationS: Double,
+    val transport: String? = null,
+    val doors: List<DoorMark> = emptyList(),
+    val startDoor: String? = null,
+)
 
 /** Recorrido guardado en el celular (se sincroniza con el backend cuando hay conexión, RF-17). */
 data class LocalSurvey(

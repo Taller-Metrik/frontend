@@ -1,5 +1,9 @@
 package com.metrik.app.feature.measure
 
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
+import androidx.compose.foundation.layout.FlowRow
 import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
@@ -247,7 +251,17 @@ fun MeasureScreen(
                 )
                 ErrorBanner(s.error)
                 when (s.phase) {
-                    MeasurePhase.IDLE -> Button(
+                    MeasurePhase.IDLE -> Column {
+                    if (s.availableDoors.isNotEmpty()) {
+                        Text("¿Empiezas en una puerta marcada? (para unir este ambiente solo)", style = MaterialTheme.typography.bodySmall)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(s.startDoor == null, { vm.setStartDoor(null) }, { Text("No") })
+                            s.availableDoors.forEach { d ->
+                                FilterChip(s.startDoor == d, { vm.setStartDoor(d) }, { Text("Puerta «$d»") }, Modifier.testTag("start_door_$d"))
+                            }
+                        }
+                    }
+                    Button(
                         onClick = {
                             val source = injectedSource ?: if (mode == "arcore") arSource else StepOdometrySource(context, stepLengthM)
                             if (source === arSource) { diagnosticsPath = null; ArDiagnostics.start() }
@@ -261,6 +275,7 @@ fun MeasureScreen(
                         Icon(Icons.Filled.PlayArrow, null); Spacer(Modifier.width(6.dp))
                         val waiting = injectedSource == null && (mode == "checking" || (mode == "arcore" && !arStatus.ready))
                         Text(if (waiting) "Esperando a la cámara…" else "Iniciar recorrido")
+                    }
                     }
 
                     MeasurePhase.MEASURING -> {
@@ -295,6 +310,27 @@ fun MeasureScreen(
                             ) {
                                 Icon(Icons.Filled.CheckCircle, null); Spacer(Modifier.width(6.dp)); Text("Finalizar")
                             }
+                        }
+                        // Pasillo (referencia): al pasar frente a la puerta de un ambiente, marcarla con su nombre
+                        var doorDialog by remember { mutableStateOf(false) }
+                        OutlinedButton(onClick = { doorDialog = true }, modifier = Modifier.fillMaxWidth().testTag("measure_door")) {
+                            Text("Puerta aquí")
+                        }
+                        if (s.doors.isNotEmpty()) StatRow("Puertas marcadas", s.doors.joinToString { it.name })
+                        if (doorDialog) {
+                            var doorName by remember { mutableStateOf("") }
+                            AlertDialog(
+                                onDismissRequest = { doorDialog = false },
+                                title = { Text("Puerta aquí") },
+                                text = {
+                                    OutlinedTextField(
+                                        doorName, { doorName = it }, label = { Text("¿A qué ambiente lleva? (Sala, Cocina…)") },
+                                        singleLine = true, modifier = Modifier.testTag("door_name"),
+                                    )
+                                },
+                                confirmButton = { TextButton(onClick = { vm.markDoor(doorName); doorDialog = false }) { Text("Marcar") } },
+                                dismissButton = { TextButton(onClick = { doorDialog = false }) { Text("Cancelar") } },
+                            )
                         }
                     }
 

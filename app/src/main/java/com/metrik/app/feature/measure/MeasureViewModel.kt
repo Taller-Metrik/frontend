@@ -1,5 +1,6 @@
 package com.metrik.app.feature.measure
 
+import com.metrik.app.domain.DoorMark
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.metrik.app.core.geometry.Geometry
@@ -45,6 +46,12 @@ data class MeasureUiState(
     val scaleDenominator: Int = 50,
     val savedLocalId: Long? = null,
     val error: String? = null,
+    /** Puertas marcadas en este recorrido («Puerta aquí»). */
+    val doors: List<DoorMark> = emptyList(),
+    /** Puerta del proyecto en la que empieza este ambiente (para unirlo solo). */
+    val startDoor: String? = null,
+    /** Puertas ya marcadas en otros ambientes del proyecto. */
+    val availableDoors: List<String> = emptyList(),
 )
 
 /**
@@ -66,11 +73,41 @@ class MeasureViewModel(
     private var startedNs = 0L
     private var captured: LocalSurvey? = null
 
+    init {
+        viewModelScope.launch {
+            surveys.observeLocal(projectId).collect { list ->
+                val names = list.flatMap { it.capture?.doors.orEmpty() }.map { it.name }.distinct()
+                _state.update { it.copy(availableDoors = names) }
+            }
+        }
+    }
+
+    /** Antes de iniciar: el ambiente empieza en esta puerta (null = en una esquina cualquiera). */
+    fun setStartDoor(name: String?) {
+        if (_state.value.phase != MeasurePhase.IDLE) return
+        _state.update { it.copy(startDoor = name) }
+    }
+
+    /** «Puerta aquí»: guarda la posición actual como la puerta que lleva al ambiente [name]. */
+    fun markDoor(name: String) {
+        val s = _state.value
+        if (s.phase != MeasurePhase.MEASURING) return
+        val clean = name.trim()
+        if (clean.isEmpty()) { _state.update { it.copy(error = "Ponle a la puerta el nombre del ambiente al que lleva") }; return }
+        if (s.doors.any { it.name.equals(clean, ignoreCase = true) } || s.availableDoors.any { it.equals(clean, ignoreCase = true) }) {
+            _state.update { it.copy(error = "Ya hay una puerta «$clean» en el proyecto") }
+            return
+        }
+        val p = odometer.track.lastOrNull() ?: run { _state.update { it.copy(error = "Todavía no hay posición") }; return }
+        _state.update { it.copy(doors = it.doors + DoorMark(clean, p.x, p.y), error = null) }
+    }
+
     fun start(source: OdometrySource, heading: Flow<Double>? = null) {
         if (_state.value.phase == MeasurePhase.MEASURING) return
+        val startDoor = _state.value.startDoor
         reset()
         startedNs = nanoClock()
-        _state.update { it.copy(phase = MeasurePhase.MEASURING, sourceKind = source.kind) }
+        _state.update { it.copy(phase = MeasurePhase.MEASURING, sourceKind = source.kind, startDoor = startDoor) }
         val sampling = viewModelScope.launch {
             var n = 0
             var lost = 0
@@ -152,7 +189,10 @@ class MeasureViewModel(
                 mode = SurveyMode.INTERIOR,
                 points = track,
                 corners = if (useCorners) corners else null,
-                capture = CaptureInfo(_state.value.sourceKind, odometer.trackingLossS, durationS),
+                capture = CaptureInfo(
+                    _state.value.sourceKind, odometer.trackingLossS, durationS,
+                    doors = _state.value.doors, startDoor = _state.value.startDoor,
+                ),
                 vertices = analysis.vertices,
                 areaM2 = analysis.areaM2,
                 perimeterM = analysis.perimeterM,
@@ -187,7 +227,7 @@ class MeasureViewModel(
         odometer.reset()
         turns.reset()
         captured = null
-        _state.value = MeasureUiState()
+        _state.value = MeasureUiState(availableDoors = _state.value.availableDoors)
     }
 
     override fun onCleared() { jobs.forEach { it.cancel() } }

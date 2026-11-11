@@ -1,5 +1,6 @@
 package com.metrik.app.feature.house
 
+import com.metrik.app.core.geometry.Point
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -61,8 +62,20 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.min
 
-/** Unión tal como la arma el usuario: ambiente A (id local) muro i ↔ ambiente B muro j (0 = del vértice 1 al 2). */
-data class JoinInput(val a: Long, val aWall: Int = 0, val b: Long, val bWall: Int = 0, val thickness: String = "0.15")
+/**
+ * Unión tal como la arma el usuario: ambiente A (id local) muro i ↔ ambiente B muro j (0 = del vértice 1 al 2).
+ * Si viene de una puerta ([door]), lleva los puntos de la puerta en cada ambiente y el backend elige los muros.
+ */
+data class JoinInput(
+    val a: Long,
+    val aWall: Int = 0,
+    val b: Long,
+    val bWall: Int = 0,
+    val thickness: String = "0.15",
+    val aPoint: Point? = null,
+    val bPoint: Point? = null,
+    val door: String? = null,
+)
 
 data class HouseUiState(
     /** Ambientes interiores del proyecto guardados en el celular. */
@@ -114,6 +127,35 @@ class HouseViewModel(
         edit { it.copy(joins = it.joins + JoinInput(a = a, b = b), error = null) }
     }
 
+    /** true si hay ambientes que empezaron en una puerta marcada (se pueden unir solos). */
+    val canAutoJoin: Boolean get() = _state.value.rooms.any { it.capture?.startDoor != null }
+
+    /**
+     * Une los ambientes por las puertas: cada ambiente que empezó en la puerta «X» se une al ambiente donde
+     * se marcó «X» (el pasillo). La base es el ambiente con más puertas usadas.
+     */
+    fun autoJoin() {
+        val s = _state.value
+        val owners = s.rooms.flatMap { r -> r.capture?.doors.orEmpty().map { d -> d.name.lowercase() to (r to d) } }
+            .distinctBy { it.first }.toMap()
+        val joins = s.rooms.mapNotNull { r ->
+            val name = r.capture?.startDoor ?: return@mapNotNull null
+            val (owner, door) = owners[name.lowercase()] ?: return@mapNotNull null
+            if (owner.id == r.id) return@mapNotNull null
+            val start = r.points.firstOrNull() ?: r.vertices.first()
+            JoinInput(a = owner.id, b = r.id, aPoint = Point(door.x, door.y), bPoint = start, door = door.name)
+        }
+        if (joins.isEmpty()) {
+            _state.update {
+                it.copy(error = "Ningún ambiente empezó en una puerta marcada: marca las puertas en el pasillo y empieza cada ambiente en la suya")
+            }
+            return
+        }
+        val base = joins.groupingBy { it.a }.eachCount().maxByOrNull { it.value }!!.key
+        val order = (listOf(base) + joins.flatMap { listOf(it.a, it.b) }).distinct()
+        edit { it.copy(selected = order, joins = joins, error = null) }
+    }
+
     fun updateJoin(i: Int, join: JoinInput) = edit { s -> s.copy(joins = s.joins.mapIndexed { k, j -> if (k == i) join else j }) }
     fun removeJoin(i: Int) = edit { s -> s.copy(joins = s.joins.filterIndexed { k, _ -> k != i }) }
 
@@ -160,7 +202,10 @@ class HouseViewModel(
     private fun request(s: HouseUiState, remote: Map<Long, Int>) = FloorPlanInDto(
         rooms = s.selected.map { remote.getValue(it) },
         joins = s.joins.map { j ->
-            FloorJoinDto(remote.getValue(j.a), j.aWall, remote.getValue(j.b), j.bWall, requireNotNull(number(j.thickness)))
+            FloorJoinDto(
+                remote.getValue(j.a), j.aWall.takeIf { j.aPoint == null }, remote.getValue(j.b), j.bWall.takeIf { j.bPoint == null },
+                requireNotNull(number(j.thickness)), j.aPoint?.let { listOf(it.x, it.y) }, j.bPoint?.let { listOf(it.x, it.y) },
+            )
         },
     )
 
@@ -206,6 +251,11 @@ fun HouseScreen(vm: HouseViewModel, onBack: () -> Unit) {
             }
 
             Text("Muros compartidos", style = MaterialTheme.typography.titleSmall)
+            if (vm.canAutoJoin) {
+                Button(onClick = vm::autoJoin, enabled = !s.busy, modifier = Modifier.fillMaxWidth().testTag("house_auto")) {
+                    Text("Unir automáticamente (por las puertas)")
+                }
+            }
             s.joins.forEachIndexed { i, j -> JoinCard(i, j, s, vm) }
             OutlinedButton(onClick = vm::addJoin, enabled = s.selected.size >= 2, modifier = Modifier.testTag("house_add_join")) {
                 Text("Unir dos ambientes")
@@ -229,10 +279,24 @@ private fun JoinCard(i: Int, j: JoinInput, s: HouseUiState, vm: HouseViewModel) 
     val chosen = s.selected.mapNotNull { s.room(it) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Unión ${i + 1}", style = MaterialTheme.typography.bodyMedium)
+            val porPuerta = j.door != null && j.aPoint != null && j.bPoint != null
+            Text(
+                if (porPuerta) "Unión ${i + 1}: por la puerta «${j.door}»" else "Unión ${i + 1}",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (porPuerta) {
+                Text(
+                    "${s.room(j.a)?.name} ↔ ${s.room(j.b)?.name}: los muros se eligen solos. Toca un muro abajo para cambiarlo a mano.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                WallPicker("Ambiente A", j.a, j.aWall, chosen, Modifier.weight(1f)) { id, wall -> vm.updateJoin(i, j.copy(a = id, aWall = wall)) }
-                WallPicker("Ambiente B", j.b, j.bWall, chosen, Modifier.weight(1f)) { id, wall -> vm.updateJoin(i, j.copy(b = id, bWall = wall)) }
+                WallPicker("Ambiente A", j.a, if (j.aPoint != null) -1 else j.aWall, chosen, Modifier.weight(1f)) { id, wall ->
+                    vm.updateJoin(i, j.copy(a = id, aWall = wall, aPoint = null, door = null))
+                }
+                WallPicker("Ambiente B", j.b, if (j.bPoint != null) -1 else j.bWall, chosen, Modifier.weight(1f)) { id, wall ->
+                    vm.updateJoin(i, j.copy(b = id, bWall = wall, bPoint = null, door = null))
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
