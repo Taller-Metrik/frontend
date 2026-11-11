@@ -89,9 +89,13 @@ fun LoadingButton(
 
 @Composable
 fun StatRow(label: String, value: String, modifier: Modifier = Modifier) {
+    // El texto largo baja de línea y el valor queda siempre visible a la derecha (pantallas angostas)
     Row(modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            label, Modifier.weight(1f).padding(end = 8.dp),
+            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }
 }
 

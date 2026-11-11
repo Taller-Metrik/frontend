@@ -242,8 +242,7 @@ private fun FinishesResult(r: FinishesOutDto) {
 @Composable
 private fun PriceCatalog(prices: List<PriceDto>, vm: FinishesViewModel) {
     Text("Precios de materiales", style = MaterialTheme.typography.titleSmall)
-    Text("Precio de la tienda (con su fecha) o el tuyo, que tiene prioridad.", style = MaterialTheme.typography.bodySmall)
-    val drafts = remember { mutableStateMapOf<String, String>() }
+    Text("Precios de la tienda con su fecha de consulta; se actualizan solos cada día.", style = MaterialTheme.typography.bodySmall)
     prices.forEach { p ->
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(8.dp)) {
@@ -254,15 +253,6 @@ private fun PriceCatalog(prices: List<PriceDto>, vm: FinishesViewModel) {
                     else -> "sin precio"
                 }
                 Text("${p.price?.soles() ?: "—"} · $origin", style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        drafts[p.key].orEmpty(), { drafts[p.key] = it }, Modifier.weight(1f),
-                        label = { Text("Mi precio (S/)") }, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    )
-                    TextButton(onClick = { vm.setOwnPrice(p.key, drafts[p.key].orEmpty()) }) { Text("Guardar") }
-                    if (p.source == "user") TextButton(onClick = { vm.resetPrice(p.key) }) { Text("Usar tienda") }
-                }
             }
         }
     }

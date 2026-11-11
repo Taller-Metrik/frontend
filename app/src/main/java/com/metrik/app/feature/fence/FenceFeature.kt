@@ -248,9 +248,6 @@ private fun FenceResult(r: FenceOutDto, s: FenceUiState, vm: FenceViewModel) {
     r.notes.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
     Text("Supuestos", style = MaterialTheme.typography.titleSmall)
     r.assumptions.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
-    Button(onClick = vm::calculateBudget, enabled = !s.busy, modifier = Modifier.fillMaxWidth().testTag("fence_budget")) {
-        Text("Calcular presupuesto con los precios")
-    }
     r.budget?.let { b ->
         HorizontalDivider()
         Text("Presupuesto", style = MaterialTheme.typography.titleSmall)
@@ -277,13 +274,6 @@ private fun ItemRow(item: TakeoffItemDto, s: FenceUiState, vm: FenceViewModel) {
                     "comprar ${item.purchase.qty(item.unit)}",
                 style = MaterialTheme.typography.bodySmall,
             )
-            if (item.priceable) {
-                OutlinedTextField(
-                    s.prices[item.key].orEmpty(), { vm.setPrice(item.key, it) }, Modifier.fillMaxWidth(),
-                    label = { Text("Precio unitario (S/ por ${item.unit})") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                )
-            }
         }
     }
 }
