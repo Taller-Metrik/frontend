@@ -5,6 +5,7 @@ import com.metrik.app.core.geometry.Point
 import com.metrik.app.domain.GpsSample
 import com.metrik.app.feature.gps.GpsPhase
 import com.metrik.app.feature.gps.GpsViewModel
+import com.metrik.app.gps.GpsMath
 import com.metrik.app.gps.GpsPrecisionTest
 import com.metrik.app.gps.LocationSource
 import com.metrik.app.testing.EvidenceRule
@@ -42,7 +43,8 @@ class GpsCornersViewModelTest {
 
         suspend fun calibrateAndStart() {
             vm.calibrate()
-            repeat(3) { gps.emit(GpsPrecisionTest.at(0.0, 0.0, t++, 2.5)) }
+            // Calibración con su dispersión: la partida (centro) no coincide con la primera lectura
+            for ((x, y) in listOf(1.0 to 0.0, -1.0 to 0.6, 0.3 to -0.9)) gps.emit(GpsPrecisionTest.at(x, y, t++, 2.5))
             vm.startRecording()
         }
 
@@ -116,6 +118,12 @@ class GpsCornersViewModelTest {
         assertTrue(done.track.size > 300)
         assertEquals(setOf(0, 1, 2, 3), saved.gps.mapNotNull { it.vertexId }.toSet())
         assertEquals(4, saved.corners?.size)
+        // Las esquinas van en metros respecto de la primera lectura enviada (así las usa el servidor)
+        val g0 = saved.gps.first()
+        val o = done.samples.first()
+        val back = saved.corners!!.map { GpsMath.toEnu(listOf(GpsMath.fromEnu(it, g0.lat, g0.lon, 1.0, 0.0)), o.lat, o.lon).first() }
+        back.zip(done.polygon).forEach { (b, p) -> assertTrue(Geometry.euclidean(b, p) < 0.01) }
+        assertTrue(saved.corners!!.zip(done.polygon).any { (c, p) -> Geometry.euclidean(c, p) > 0.01 })
     }
 
     @Test

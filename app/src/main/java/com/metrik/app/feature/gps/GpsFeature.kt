@@ -33,6 +33,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.metrik.app.core.geometry.Geometry
 import com.metrik.app.core.geometry.GeometryException
 import com.metrik.app.core.geometry.Point
 import com.metrik.app.core.geometry.PolygonAnalysis
@@ -41,12 +42,13 @@ import com.metrik.app.data.repository.SurveyRepository
 import com.metrik.app.domain.GpsSample
 import com.metrik.app.domain.LocalSurvey
 import com.metrik.app.domain.SurveyMode
-import com.metrik.app.core.geometry.Geometry
+import com.metrik.app.feature.plan.saveToDownloads
 import com.metrik.app.gps.GpsMath
 import com.metrik.app.gps.GpsPrecision
 import com.metrik.app.gps.GpsTrackFilter
-import com.metrik.app.gps.PdrGpsFusion
+import com.metrik.app.gps.GpsTraverse
 import com.metrik.app.gps.LocationSource
+import com.metrik.app.gps.PdrGpsFusion
 import com.metrik.app.gps.Transport
 import com.metrik.app.ui.components.ErrorBanner
 import com.metrik.app.ui.components.MetrikTopBar
@@ -60,6 +62,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 enum class GpsPhase { IDLE, CALIBRATING, READY, RECORDING, FINISHED }
 
@@ -69,6 +72,7 @@ data class GpsUiState(
     val calibration: GpsMath.StaticError? = null,
     val lastAccuracyM: Double? = null,
     val samples: List<GpsSample> = emptyList(),
+    /** Recorrido en metros respecto de la partida; al finalizar, ya corregido tramo a tramo. */
     val track: List<Point> = emptyList(),
     val polygon: List<Point> = emptyList(),
     val analysis: PolygonAnalysis? = null,
@@ -80,23 +84,33 @@ data class GpsUiState(
     val usingSteps: Boolean = false,
     val steps: Int = 0,
     val gpsCorrections: Int = 0,
-    /** Esquina que se está fijando (quieto sobre ella); null = caminando (RF-18). */
-    val fixingVertex: Int? = null,
-    /** Lecturas tomadas en la esquina actual. */
-    val dwellCount: Int = 0,
+    /** Esquinas marcadas al toque (la partida no se cuenta). */
     val cornersFixed: Int = 0,
-    /** Se volvió a fijar la primera esquina al final (RF-19). */
-    val closureFixed: Boolean = false,
-    /** Incertidumbre al 95 % del área y del perímetro (RF-21); solo con esquinas fijadas. */
+    /** Dónde se marcó cada esquina (metros), para dibujarlas mientras se recorre. */
+    val cornerPoints: List<Point> = emptyList(),
+    /** Esquina en la que la persona sigue quieta: sus lecturas se están promediando. Null = caminando. */
+    val atCorner: Int? = null,
+    /** Lecturas quietas acumuladas en la esquina actual (o en la partida, al final). */
+    val stillReadings: Int = 0,
+    /** Incertidumbre al 95 % del área y del perímetro (RF-21); solo con esquinas marcadas. */
     val uncertainty: GpsPrecision.AreaUncertainty? = null,
+    /** Error de cierre: distancia entre el final del recorrido y la partida antes de repartirla. */
     val closureM: Double? = null,
-    /** false = el cierre es mayor de lo esperable: conviene volver a medir. */
+    /** false = no se volvió a la partida: la figura no se cerró. */
     val closureConsistent: Boolean? = null,
     /** Precisión de la última lectura descartada por señal de interior al medir la precisión; null = señal buena. */
     val weakSignalM: Double? = null,
 )
 
-/** Medición exterior con GPS (CU-02): calibración condicional, recorrido y área (RF-08, RF-09). */
+/**
+ * Medición exterior con GPS (CU-02): precisión al inicio, recorrido con esquinas al toque y área (RF-08, RF-09, RF-18 a RF-21).
+ *
+ * - La **partida** es el centro de las lecturas quietas de la medición de precisión (vértice 0).
+ * - **Esquina** se marca al toque, sin esperar. Si la persona se queda quieta, las lecturas GPS de ese rato se
+ *   promedian solas y anclan la esquina; al caminar de nuevo, se cierra el promedio.
+ * - Al **finalizar** se asume que se terminó en la partida: las lecturas quietas del final miden el cierre y
+ *   [GpsTraverse] reparte ese error entre las esquinas y corrige el recorrido tramo a tramo.
+ */
 class GpsViewModel(
     private val projectId: Int,
     private val location: LocationSource,
@@ -111,40 +125,43 @@ class GpsViewModel(
     private val stepLengthM: Double = 0.70,
     private val nanoClock: () -> Long = System::nanoTime,
     private val wallClockS: () -> Double = { System.currentTimeMillis() / 1000.0 },
-    /** Lecturas por esquina fijada: a 1 lectura por segundo, 30 ≈ 30 s quieto (RF-18). */
-    private val cornerDwellSamples: Int = 30,
 ) : ViewModel() {
     private var lastStepNs: Long? = null
-    /** Lecturas tomadas quieto sobre las esquinas, etiquetadas con su vertexId (se guardan aparte del trazo). */
+    /** Lecturas quietas etiquetadas con su vértice (0 = partida al final, 1.. = esquinas); se guardan aparte del trazo. */
     private val cornerSamples = mutableListOf<GpsSample>()
-    private var closingDwell = false
-    /** Índice de [cornerSamples] donde empezó la esquina en curso (para descartarla si no se completa). */
-    private var dwellStartIndex = 0
-    /** Precisión máxima aceptada al fijar una esquina (la del transporte elegido). */
-    private var dwellMaxAccuracyM = Transport.of("walk").maxAccuracyM
+    /** Índice del punto del recorrido en el que se tocó cada esquina. */
+    private val cornerIdx = mutableListOf<Int>()
+    /** Esquina en la que la persona sigue quieta desde el toque; null en cuanto vuelve a caminar. */
+    private var currentCorner: Int? = null
+    /** Lecturas quietas desde el último movimiento (la pausa natural en una esquina o en la partida). */
+    private val stillBuffer = mutableListOf<GpsSample>()
+    /** Lecturas GPS en movimiento usadas para corregir los pasos, con el punto del recorrido al que corresponden. */
+    private val gpsObs = mutableListOf<GpsTraverse.GpsObs>()
+    private var maxAccuracyM = Transport.of("walk").maxAccuracyM
     private val _state = MutableStateFlow(GpsUiState())
-
-    init {
-        require(cornerDwellSamples > 0) { "cornerDwellSamples debe ser mayor que 0" }
-    }
     val state: StateFlow<GpsUiState> = _state
     private var job: Job? = null
     private val calibration = mutableListOf<GpsSample>()
     /** Precisión de todas las lecturas del recorrido (para saber si el terreno es más grande que el error). */
     private val recordAccuracies = mutableListOf<Double>()
+    private val diag = StringBuilder()
 
-    /** Lecturas con el celular quieto para estimar el margen de error inicial. */
+    /** Lecturas con el celular quieto para estimar el margen de error inicial y fijar la partida. */
     fun calibrate() {
         job?.cancel()
         calibration.clear()
+        diag.clear()
+        diag.append(DIAG_HEADER).append('\n')
         _state.update { it.copy(phase = GpsPhase.CALIBRATING, calibrationSamples = 0, error = null) }
         job = viewModelScope.launch {
             location.samples.collect { s ->
                 // Bajo techo o junto a una pared el error es de 10–20 m: esas lecturas no sirven para el punto de partida
                 if (s.accuracyM > CALIBRATION_MAX_ACCURACY_M) {
+                    log("gps", s, note = "calibracion descartada")
                     _state.update { it.copy(weakSignalM = s.accuracyM, lastAccuracyM = s.accuracyM) }
                     return@collect
                 }
+                log("gps", s, note = "calibracion")
                 calibration += s
                 _state.update { it.copy(calibrationSamples = calibration.size, lastAccuracyM = s.accuracyM, weakSignalM = null) }
                 if (calibration.size >= calibrationTarget) {
@@ -158,79 +175,64 @@ class GpsViewModel(
 
     fun setTransport(key: String) = _state.update { it.copy(transport = Transport.of(key).key) }
 
-    /** Lecturas que hacen falta para fijar una esquina (la pantalla muestra el avance). */
-    val cornerDwellTarget: Int get() = cornerDwellSamples
-
-    /** El usuario está quieto sobre la siguiente esquina: las próximas lecturas la fijan (RF-18). */
+    /**
+     * Marca la esquina donde está la persona, al toque (RF-18). Las lecturas quietas desde que se detuvo y las que
+     * sigan mientras no camine se promedian para anclarla. Un segundo toque sin haber caminado no cuenta.
+     */
     fun fixCorner() {
         val s = _state.value
-        if (s.phase != GpsPhase.RECORDING || s.fixingVertex != null || s.closureFixed) return
-        closingDwell = false
-        dwellStartIndex = cornerSamples.size
-        _state.update { it.copy(fixingVertex = s.cornersFixed, dwellCount = 0, error = null) }
-    }
-
-    /** Cancela la esquina en curso (por ejemplo, si se perdió la señal): sus lecturas se descartan. */
-    fun cancelCorner() {
-        if (_state.value.fixingVertex == null) return
-        discardIncompleteDwell()
-        _state.update { it.copy(fixingVertex = null, dwellCount = 0) }
-    }
-
-    private fun discardIncompleteDwell() {
-        if (dwellStartIndex < cornerSamples.size) cornerSamples.subList(dwellStartIndex, cornerSamples.size).clear()
-    }
-
-    /** De vuelta en el punto de partida: se fija otra vez la primera esquina para medir el cierre (RF-19). */
-    fun fixStartAgain() {
-        val s = _state.value
-        if (s.phase != GpsPhase.RECORDING || s.fixingVertex != null || s.closureFixed) return
-        if (s.cornersFixed < 3) {
-            _state.update { it.copy(error = "Fija al menos 3 esquinas antes de volver al inicio") }
+        if (s.phase != GpsPhase.RECORDING) return
+        val idx = s.track.lastIndex
+        if (idx <= 0) {
+            _state.update { it.copy(error = "Todavía no hay recorrido: camina hasta la esquina y vuelve a tocar «Esquina»") }
             return
         }
-        closingDwell = true
-        dwellStartIndex = cornerSamples.size
-        _state.update { it.copy(fixingVertex = 0, dwellCount = 0, error = null) }
+        if (currentCorner != null || (cornerIdx.isNotEmpty() && idx <= cornerIdx.last())) return
+        val vertex = s.cornersFixed + 1
+        cornerIdx += idx
+        currentCorner = vertex
+        cornerSamples += stillBuffer.map { it.copy(vertexId = vertex) }
+        log("esquina", null, x = s.track[idx].x, y = s.track[idx].y, note = "esquina $vertex, ${stillBuffer.size} lecturas quietas previas")
+        _state.update {
+            it.copy(
+                cornersFixed = vertex, cornerPoints = it.cornerPoints + s.track[idx], atCorner = vertex,
+                stillReadings = stillBuffer.size, error = null,
+            )
+        }
     }
 
-    /**
-     * Si se está fijando una esquina, guarda la lectura etiquetada y devuelve true (no va al trazo).
-     * Las lecturas muy imprecisas para el transporte no cuentan para la esquina.
-     */
-    private fun consumeDwell(s: GpsSample): Boolean {
-        val vertex = _state.value.fixingVertex ?: return false
-        if (s.accuracyM > dwellMaxAccuracyM) {
+    /** La persona volvió a moverse: termina el promedio de la esquina (si lo había) y empieza una pausa nueva. */
+    private fun onMoved() {
+        currentCorner = null
+        stillBuffer.clear()
+        if (_state.value.atCorner != null || _state.value.stillReadings != 0) _state.update { it.copy(atCorner = null, stillReadings = 0) }
+    }
+
+    /** Lectura con la persona quieta: se guarda para promediar la esquina actual o el cierre en la partida. */
+    private fun onStillSample(s: GpsSample) {
+        if (s.accuracyM > maxAccuracyM) {
+            log("gps", s, note = "quieto, baja precision")
             _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
-            return true
+            return
         }
-        cornerSamples += s.copy(vertexId = vertex)
-        val count = _state.value.dwellCount + 1
-        if (count < cornerDwellSamples) {
-            _state.update { it.copy(dwellCount = count, lastAccuracyM = s.accuracyM) }
-        } else {
-            _state.update {
-                it.copy(
-                    fixingVertex = null, dwellCount = 0, lastAccuracyM = s.accuracyM,
-                    cornersFixed = if (closingDwell) it.cornersFixed else it.cornersFixed + 1,
-                    closureFixed = closingDwell,
-                )
-            }
-        }
-        return true
+        stillBuffer += s
+        currentCorner?.let { cornerSamples += s.copy(vertexId = it) }
+        log("gps", s, note = "quieto" + (currentCorner?.let { " en esquina $it" } ?: ""))
+        _state.update { it.copy(stillReadings = stillBuffer.size, lastAccuracyM = s.accuracyM) }
     }
 
     fun startRecording() {
         job?.cancel()
         cornerSamples.clear()
+        cornerIdx.clear()
+        stillBuffer.clear()
+        gpsObs.clear()
+        currentCorner = null
         recordAccuracies.clear()
-        closingDwell = false
-        dwellStartIndex = 0
         val profile = Transport.of(_state.value.transport)
-        dwellMaxAccuracyM = profile.maxAccuracyM
+        maxAccuracyM = profile.maxAccuracyM
         val filter = GpsTrackFilter(profile)
         // Punto de partida = centro de las lecturas de calibración (la persona estaba quieta en el inicio).
-        // Antes no se usaban: el punto de partida no aparecía hasta la primera lectura precisa en marcha.
         val start = GpsMath.startPoint(calibration)?.takeIf { it.accuracyM <= profile.maxAccuracyM }
         start?.let(filter::seed)
         val initial = listOfNotNull(start)
@@ -238,11 +240,12 @@ class GpsViewModel(
             it.copy(
                 phase = GpsPhase.RECORDING, samples = initial,
                 track = if (initial.isEmpty()) emptyList() else GpsMath.toEnu(initial), error = null, discarded = 0,
-                fixingVertex = null, dwellCount = 0, cornersFixed = 0, closureFixed = false,
-                uncertainty = null, closureM = null, closureConsistent = null,
+                cornersFixed = 0, cornerPoints = emptyList(), atCorner = null, stillReadings = 0,
+                uncertainty = null, closureM = null, closureConsistent = null, polygon = emptyList(), analysis = null,
             )
         }
         lastStepNs = null
+        log("inicio", start, note = "partida = centro de ${calibration.size} lecturas quietas")
         // A pie con brújula: pasos + brújula corregidos con GPS. En bici, moto o carro no hay pasos: solo GPS.
         val compass = compassSteps
         if (compass != null && profile.key == "walk") {
@@ -252,12 +255,14 @@ class GpsViewModel(
         job = viewModelScope.launch {
             location.samples.collect { s ->
                 recordAccuracies += s.accuracyM
-                if (consumeDwell(s)) return@collect
                 val accepted = filter.offer(s, moving = !GpsMath.isStill(s))
                 if (accepted.isEmpty()) {
-                    _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
+                    if (s.accuracyM <= profile.maxAccuracyM) onStillSample(s)
+                    else { log("gps", s, note = "descartada"); _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) } }
                     return@collect
                 }
+                onMoved()
+                accepted.forEach { log("gps", it, note = "aceptada") }
                 val samples = _state.value.samples + accepted
                 _state.update {
                     it.copy(samples = samples, lastAccuracyM = s.accuracyM, track = GpsMath.toEnu(samples))
@@ -268,7 +273,8 @@ class GpsViewModel(
 
     /**
      * Recorrido a pie: cada paso agrega un punto (línea continua, sigue la caminata) y el GPS corrige
-     * la deriva de los pasos. Quieto no hay pasos y el GPS tampoco mueve la posición.
+     * la deriva de los pasos. Quieto no hay pasos y el GPS tampoco mueve la posición: sus lecturas se
+     * promedian para la esquina.
      */
     private fun recordWithSteps(profile: com.metrik.app.gps.TransportProfile, start: GpsSample?, compass: Flow<Double>) {
         var origin: GpsSample? = start
@@ -292,53 +298,63 @@ class GpsViewModel(
                     val confirmed = gate.onStep(nanoClock(), headingRad)
                     if (confirmed.isEmpty()) return@collect
                     lastStepNs = nanoClock()
-                    confirmed.forEach { h -> f.onStep(h); times += wallClockS() }
+                    onMoved()
+                    confirmed.forEach { h ->
+                        f.onStep(h); times += wallClockS()
+                        log("paso", null, headingDeg = Math.toDegrees(h), x = f.position.x, y = f.position.y)
+                    }
                     publish(f, o) { it.copy(steps = it.steps + confirmed.size) }
                 }
             }
             location.samples.collect { s ->
                 recordAccuracies += s.accuracyM
-                if (consumeDwell(s)) return@collect
-                if (s.accuracyM > profile.maxAccuracyM) {
-                    _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
-                    return@collect
-                }
                 val o = origin
                 val f = fusion
                 if (o == null || f == null) {
+                    if (s.accuracyM > profile.maxAccuracyM) { _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }; return@collect }
                     // Sin calibración válida: la primera lectura precisa es el punto de partida
                     origin = s
                     fusion = PdrGpsFusion(stepLengthM, s.accuracyM)
                     times.clear(); times += s.timestampS
+                    log("inicio", s, note = "partida = primera lectura precisa")
                     _state.update { it.copy(samples = listOf(s), track = GpsMath.toEnu(listOf(s)), lastAccuracyM = s.accuracyM) }
                     return@collect
                 }
-                // Quieto (sin pasos recientes): el GPS "pasea" y no debe mover la posición
+                // Quieto (sin pasos recientes o Doppler ≈ 0): el GPS "pasea" y no debe mover la posición
                 val walking = lastStepNs?.let { nanoClock() - it < STEP_WINDOW_NS } == true
-                if (!walking || GpsMath.isStill(s)) { _state.update { it.copy(lastAccuracyM = s.accuracyM) }; return@collect }
-                val used = f.onGps(GpsMath.toEnu(listOf(s), o.lat, o.lon).first(), s.accuracyM)
+                if (!walking || GpsMath.isStill(s)) { onStillSample(s); return@collect }
+                if (s.accuracyM > profile.maxAccuracyM) {
+                    log("gps", s, note = "descartada")
+                    _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
+                    return@collect
+                }
+                val enu = GpsMath.toEnu(listOf(s), o.lat, o.lon).first()
+                val used = f.onGps(enu, s.accuracyM)
+                if (used) gpsObs += GpsTraverse.GpsObs(f.track().lastIndex, enu, GpsPrecision.sigmaFromAccuracy(s.accuracyM))
+                log("gps", s, note = if (used) "correccion" else "rebote")
                 if (used) publish(f, o) { it.copy(gpsCorrections = it.gpsCorrections + 1, lastAccuracyM = s.accuracyM) }
                 else _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
             }
         }
     }
 
+    /** Termina el recorrido en la partida: cierra la poligonal, corrige el recorrido y calcula el área. */
     fun finish() {
         job?.cancel()
-        val samples = _state.value.samples
-        // Una esquina a medio fijar no cuenta: sus pocas lecturas inflarían σ o falsearían el cierre
-        if (_state.value.fixingVertex != null) discardIncompleteDwell()
-        _state.update { it.copy(fixingVertex = null, dwellCount = 0) }
-        tooSmallForGps(samples + cornerSamples)?.let { msg ->
+        val s = _state.value
+        // Si ya se caminó después de la última esquina, las lecturas quietas del final son el cierre en la partida
+        val endSamples = if (currentCorner == null) stillBuffer.toList() else emptyList()
+        cornerSamples += endSamples.map { it.copy(vertexId = 0) }
+        currentCorner = null
+        _state.update { it.copy(atCorner = null, stillReadings = 0) }
+        tooSmallForGps(s.samples + cornerSamples)?.let { msg ->
             _state.update { it.copy(phase = GpsPhase.READY, polygon = emptyList(), analysis = null, error = msg) }
             return
         }
-        if (GpsPrecision.fixedCorners(cornerSamples) >= 3 && finishWithCorners(samples.firstOrNull())) {
-            warnIfCrossed()
-            return
-        }
-        runCatching { GpsMath.closedPolygon(samples, Transport.of(_state.value.transport).maxAccuracyM) }
+        if (cornerIdx.size >= 2 && finishWithTraverse(s, endSamples)) return
+        runCatching { GpsMath.closedPolygon(s.samples, Transport.of(s.transport).maxAccuracyM) }
             .onSuccess { r ->
+                log("fin", null, note = "sin esquinas: vertices=${r.vertices.size}, cierre=${"%.2f".format(Locale.US, r.closureM ?: 0.0)}")
                 _state.update {
                     it.copy(phase = GpsPhase.FINISHED, polygon = r.vertices, analysis = r.analysis, closureM = r.closureM)
                 }
@@ -350,6 +366,48 @@ class GpsViewModel(
                 }
             }
     }
+
+    /**
+     * Poligonal con las esquinas al toque (RF-18 a RF-21): ancla cada esquina con sus lecturas quietas, reparte el
+     * cierre hasta la partida y corrige el recorrido tramo a tramo. Devuelve false si no se pudo (se usa el trazo).
+     */
+    private fun finishWithTraverse(s: GpsUiState, endSamples: List<GpsSample>): Boolean = runCatching {
+        val origin = s.samples.first()
+        fun anchor(readings: List<GpsSample>): GpsTraverse.Anchor? {
+            val valid = readings.filter(GpsPrecision::acceptsSignal)
+            if (valid.size < GpsPrecision.MIN_READINGS_PER_VERTEX) return null
+            val fix = GpsPrecision.fixCorner(
+                GpsMath.toEnu(valid, origin.lat, origin.lon), valid.map { GpsPrecision.sigmaFromAccuracy(it.accuracyM) },
+                valid.last().timestampS - valid.first().timestampS + 1,
+            )
+            return GpsTraverse.Anchor(fix.point, fix.sigmaM)
+        }
+        val anchors = cornerIdx.indices.map { k -> anchor(cornerSamples.filter { it.vertexId == k + 1 }) }
+        val startSigma = anchor(calibration)?.sigmaM ?: GpsPrecision.sigmaFromAccuracy(origin.accuracyM)
+        // Solo GPS (sin pasos): el recorrido ya es GPS, cada tramo vale ±√2·σ de una lectura y no deriva con el largo
+        val gpsOnly = !s.usingSteps
+        val accs = s.samples.drop(1).map { it.accuracyM }.sorted()
+        val legSigma0 = if (gpsOnly && accs.isNotEmpty()) Math.sqrt(2.0) * GpsPrecision.sigmaFromAccuracy(accs[accs.size / 2]) else GpsTraverse.TRACK_SIGMA0_M
+        val r = GpsTraverse.adjust(
+            s.track, cornerIdx, anchors, anchor(endSamples), startSigma,
+            gps = if (gpsOnly) emptyList() else gpsObs.toList(),
+            sigma0M = legSigma0, driftPerM = if (gpsOnly) 0.0 else GpsTraverse.TRACK_DRIFT_PER_M,
+        )
+        val k = if (r.closed) GpsPrecision.CLOSURE_COVERAGE_FACTOR else GpsPrecision.COVERAGE_FACTOR
+        Triple(r, Geometry.analyze(r.vertices), GpsPrecision.uncertainty(r.vertices, r.sigmasM, k))
+    }.onSuccess { (r, analysis, u) ->
+        log("fin", null, note = "esquinas=${cornerIdx.size}, anclas=${r.sigmasM.map { "%.1f".format(Locale.US, it) }}, " +
+            "cierre=${"%.2f".format(Locale.US, r.closureM)}, cerrado=${r.closed}")
+        _state.update {
+            it.copy(
+                phase = GpsPhase.FINISHED, polygon = r.vertices, analysis = analysis, uncertainty = u, track = r.track,
+                closureM = r.closureM, closureConsistent = r.closed,
+                error = if (r.closed) null else "No terminaste en el punto de partida (quedaste a ${"%.1f".format(Locale.US, r.closureM)} m): " +
+                    "la figura no se cerró. Vuelve al inicio antes de finalizar para que la medida sea precisa.",
+            )
+        }
+        if (r.closed) warnIfCrossed()
+    }.onFailure { t -> log("fin", null, note = "poligonal fallida: ${t.message}") }.isSuccess
 
     /**
      * Mensaje si lo recorrido no es claramente mayor que el error del GPS (p. ej. 4 m con ±8 m de error): el
@@ -375,32 +433,18 @@ class GpsViewModel(
         }
     }
 
-    /**
-     * Terreno a partir de las esquinas fijadas, con su incertidumbre (RF-18 a RF-21). Devuelve false si las
-     * esquinas no alcanzan (por ejemplo, señal insuficiente): entonces se usa el trazo continuo.
-     */
-    private fun finishWithCorners(origin: GpsSample?): Boolean = runCatching {
-        val poly = GpsPrecision.cornerPolygon(cornerSamples, origin)
-        Triple(poly, Geometry.analyze(poly.vertices), GpsPrecision.uncertainty(poly.vertices, poly.sigmasM, poly.k))
-    }.onSuccess { (poly, analysis, u) ->
-        _state.update {
-            it.copy(
-                phase = GpsPhase.FINISHED, polygon = poly.vertices, analysis = analysis, uncertainty = u,
-                closureM = poly.closureM, closureConsistent = poly.closureConsistent,
-            )
-        }
-    }.isSuccess
-
     fun save(name: String) {
         val s = _state.value
         val analysis = s.analysis ?: return
         if (name.isBlank()) { _state.update { it.copy(error = "Ponle un nombre al terreno") }; return }
-        // Trazo + lecturas de las esquinas, en orden de tiempo: el backend las agrupa por vertex_id
-        val gps = (s.samples + cornerSamples).sortedBy { it.timestampS }
+        // Trazo + lecturas quietas de la partida (vértice 0) y de las esquinas, en orden de tiempo: el backend las agrupa por vertex_id
+        val gps = (s.samples + calibration.map { it.copy(vertexId = 0) } + cornerSamples).distinct().sortedBy { it.timestampS }
         viewModelScope.launch {
             val id = surveys.saveLocal(
                 LocalSurvey(
                     projectId = projectId, name = name.trim(), mode = SurveyMode.EXTERIOR, gps = gps,
+                    // Vértices ajustados en el celular, en metros respecto de la primera lectura enviada (el origen del servidor)
+                    corners = if (s.uncertainty != null) cornersFromFirstReading(analysis.vertices, s.samples.first(), gps.first()) else null,
                     capture = com.metrik.app.domain.CaptureInfo("gps", 0.0, 0.0, s.transport),
                     vertices = analysis.vertices, areaM2 = analysis.areaM2, perimeterM = analysis.perimeterM,
                     scaleDenominator = maxOf(500, Scale.suggestFor(analysis.vertices)),
@@ -408,6 +452,30 @@ class GpsViewModel(
             )
             _state.update { it.copy(savedLocalId = id) }
         }
+    }
+
+    /** Lleva los vértices (metros respecto de la partida [origin]) a metros respecto de la lectura [first]. */
+    private fun cornersFromFirstReading(vertices: List<Point>, origin: GpsSample, first: GpsSample): List<Point> {
+        val ll = vertices.map { GpsMath.fromEnu(it, origin.lat, origin.lon, origin.accuracyM, origin.timestampS) }
+        return GpsMath.toEnu(ll, first.lat, first.lon)
+    }
+
+    /** Registro de la medición (CSV) para revisar qué vio el GPS y la brújula; se guarda en Descargas al finalizar. */
+    fun diagnosticsCsv(): String = diag.toString()
+
+    private fun log(kind: String, s: GpsSample?, headingDeg: Double? = null, x: Double? = null, y: Double? = null, note: String = "") {
+        val origin = _state.value.samples.firstOrNull()
+        val (px, py) = when {
+            x != null && y != null -> x to y
+            s != null && origin != null -> GpsMath.toEnu(listOf(s), origin.lat, origin.lon).first().let { it.x to it.y }
+            else -> null to null
+        }
+        fun d(v: Double?) = v?.let { "%.6f".format(Locale.US, it) } ?: ""
+        fun m(v: Double?) = v?.let { "%.2f".format(Locale.US, it) } ?: ""
+        diag.append(m(s?.timestampS ?: wallClockS())).append(',').append(kind).append(',')
+            .append(d(s?.lat)).append(',').append(d(s?.lon)).append(',').append(m(s?.accuracyM)).append(',')
+            .append(m(s?.speedMps)).append(',').append(m(headingDeg)).append(',').append(m(px)).append(',').append(m(py)).append(',')
+            .append(note.replace(',', ';')).append('\n')
     }
 
     override fun onCleared() { job?.cancel() }
@@ -424,6 +492,7 @@ class GpsViewModel(
          * las esquinas de un terreno chico.
          */
         const val STEP_POINT_ACCURACY_M = 0.5
+        const val DIAG_HEADER = "t_s,tipo,lat,lon,precision_m,velocidad_mps,rumbo_deg,x_m,y_m,nota"
     }
 }
 
@@ -437,14 +506,27 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(granted) { if (!granted) permission.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
     LaunchedEffect(s.savedLocalId) { s.savedLocalId?.let(onSaved) }
+    // Registro de la medición → Descargas/MetriK (para revisar el GPS y la brújula si algo sale mal)
+    var diagnosticsPath by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(s.phase) {
+        if (s.phase == GpsPhase.FINISHED) {
+            val csv = vm.diagnosticsCsv()
+            if (csv.isNotBlank()) {
+                val name = "MetriK_gps_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date()) + ".csv"
+                diagnosticsPath = runCatching { saveToDownloads(context, name, csv.toByteArray(), "text/csv") }.getOrNull()
+            }
+        } else if (s.phase == GpsPhase.RECORDING) diagnosticsPath = null
+    }
 
     Scaffold(topBar = { MetrikTopBar("Medir terreno (GPS)", onBack = onBack) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Card(Modifier.fillMaxWidth().weight(1f)) {
-                // Punto actual visible desde el inicio (el de partida sale de la calibración)
+                // Recorrido (gris), esquinas marcadas y, al final, el terreno con los muros numerados y la partida en verde
                 PlanDrawing(
                     track = s.track, polygon = s.polygon,
+                    corners = if (s.phase == GpsPhase.FINISHED) s.polygon else s.cornerPoints,
                     current = if (s.phase == GpsPhase.RECORDING) s.track.lastOrNull() else null,
+                    numberWalls = s.phase == GpsPhase.FINISHED,
                 )
             }
             ErrorBanner(if (!granted) "Se necesita permiso de ubicación" else s.error)
@@ -464,7 +546,7 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                         style = MaterialTheme.typography.bodySmall)
                     Text(
                         "El GPS tiene un error de 3 a 15 m: úsalo para terrenos grandes, no para un aula. " +
-                            "Primero quédate quieto EN EL PUNTO DE PARTIDA unos segundos: mide el error y fija el inicio del recorrido.",
+                            "Párate EN UNA ESQUINA del terreno, a cielo abierto, y quédate quieta unos segundos: se mide el error y se fija la partida.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Button(onClick = vm::calibrate, enabled = granted, modifier = Modifier.fillMaxWidth().testTag("gps_calibrate")) {
@@ -501,21 +583,31 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                     if (s.usingSteps) {
                         StatRow("Pasos (brújula)", s.steps.toString())
                         StatRow("Correcciones GPS", s.gpsCorrections.toString())
-                        if (s.discarded > 0) StatRow("GPS ignorado (rebotes o baja precisión)", s.discarded.toString())
-                        Text("Camina por el borde del terreno con el celular en la mano, apuntando hacia donde caminas, y vuelve al punto de inicio.")
                     } else {
                         StatRow("Lecturas (${Transport.of(s.transport).label})", s.samples.size.toString())
-                        if (s.discarded > 0) StatRow("Descartadas (saltos o baja precisión)", s.discarded.toString())
-                        Text("Recorre el borde del terreno y vuelve al punto de inicio.")
                     }
-                    CornerControls(
-                        s, vm.cornerDwellTarget,
-                        onFixCorner = vm::fixCorner, onFixStart = vm::fixStartAgain, onCancel = vm::cancelCorner,
+                    if (s.discarded > 0) StatRow("GPS ignorado (rebotes o baja precisión)", s.discarded.toString())
+                    StatRow("Esquinas marcadas", s.cornersFixed.toString())
+                    val at = s.atCorner
+                    if (at != null) {
+                        Text(
+                            "Quieta en la esquina $at: ${s.stillReadings} lecturas promediándose. Sigue caminando cuando quieras.",
+                            color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("gps_at_corner"),
+                        )
+                    } else if (s.stillReadings > 0 && s.cornersFixed >= 2) {
+                        Text("Quieta: ${s.stillReadings} lecturas. Si estás en la partida, toca Finalizar.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text(
+                        "Camina por el borde con el celular apuntando hacia donde vas. Al llegar a cada esquina toca «Esquina» " +
+                            "(si te quedas quieta un momento, la esquina sale más precisa). Termina EN EL PUNTO DE PARTIDA y toca Finalizar.",
+                        style = MaterialTheme.typography.bodySmall,
                     )
-                    Button(
-                        onClick = vm::finish, enabled = s.fixingVertex == null,
-                        modifier = Modifier.fillMaxWidth().testTag("gps_finish"),
-                    ) { Text("Finalizar") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = vm::fixCorner, modifier = Modifier.weight(1f).testTag("gps_fix_corner")) {
+                            Text("Esquina ${s.cornersFixed + 1}")
+                        }
+                        Button(onClick = vm::finish, modifier = Modifier.weight(1f).testTag("gps_finish")) { Text("Finalizar") }
+                    }
                 }
                 GpsPhase.FINISHED -> {
                     s.analysis?.let { a ->
@@ -523,70 +615,28 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                         StatRow("Área", if (u != null) "${a.areaM2.m2()} ± ${u.areaU95M2.m2()} (${"%.1f".format(u.areaU95Pct)} %)" else a.areaM2.m2())
                         StatRow("Perímetro", if (u != null) "${a.perimeterM.m()} ± ${u.perimeterU95M.m()}" else a.perimeterM.m())
                         StatRow("Vértices", a.vertices.size.toString())
+                        s.closureM?.let { StatRow("Error de cierre", it.m(2)) }
+                        if (s.closureConsistent != false && s.closureM != null) {
+                            Text(
+                                "Ese error se repartió entre las esquinas: la figura termina exactamente en el punto de partida.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                         if (u != null) {
-                            Text("Margen al 95 % calculado con las esquinas fijadas.", style = MaterialTheme.typography.bodySmall)
+                            Text("Margen al 95 % calculado con las esquinas marcadas y el cierre.", style = MaterialTheme.typography.bodySmall)
                         } else {
                             Text(
-                                "Sin esquinas fijadas no se calcula el margen en el celular; el servidor lo calcula al sincronizar.",
+                                "Sin esquinas marcadas no se calcula el margen en el celular; el servidor lo calcula al sincronizar.",
                                 style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        s.closureM?.let { StatRow("Error de cierre", it.m(2)) }
-                        if (u == null && s.closureM != null) {
-                            Text(
-                                "Ese error se repartió a lo largo del recorrido: la figura cierra exactamente en el punto de partida.",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        if (s.closureConsistent == false) {
-                            Text(
-                                "El cierre es mayor de lo esperable para la precisión del GPS: conviene volver a medir con más tiempo en cada esquina.",
-                                color = MaterialTheme.colorScheme.error,
                             )
                         }
                     }
+                    diagnosticsPath?.let { Text("Registro de la medición guardado en $it", style = MaterialTheme.typography.bodySmall) }
                     var name by rememberSaveable { mutableStateOf("") }
                     OutlinedTextField(name, { name = it }, label = { Text("Nombre del terreno") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Button(onClick = { vm.save(name) }, modifier = Modifier.fillMaxWidth().testTag("gps_save")) { Text("Guardar") }
                 }
             }
-        }
-    }
-}
-
-/**
- * Esquinas fijadas (RF-18, RF-19): al llegar a cada esquina el usuario se queda quieto mientras se
- * toman las lecturas; al final vuelve al punto de partida y lo fija otra vez para medir el cierre.
- */
-@Composable
-private fun CornerControls(
-    s: GpsUiState, target: Int, onFixCorner: () -> Unit, onFixStart: () -> Unit, onCancel: () -> Unit,
-) {
-    val fixing = s.fixingVertex
-    if (fixing != null) {
-        val what = if (s.cornersFixed >= 3 && fixing == 0) "el punto de partida" else "la esquina ${fixing + 1}"
-        Text("Quédate quieto sobre $what… ${s.dwellCount}/$target lecturas", style = MaterialTheme.typography.titleSmall)
-        LinearProgressIndicator(progress = { s.dwellCount / target.toFloat() }, modifier = Modifier.fillMaxWidth())
-        OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth().testTag("gps_cancel_corner")) {
-            Text("Cancelar esquina")
-        }
-        return
-    }
-    StatRow("Esquinas fijadas", if (s.closureFixed) "${s.cornersFixed} + cierre" else s.cornersFixed.toString())
-    Text(
-        "Para más precisión: al llegar a cada esquina toca «Fijar esquina» y quédate quieto ~$target s. " +
-            "Al terminar, vuelve al punto de partida y fíjalo otra vez.",
-        style = MaterialTheme.typography.bodySmall,
-    )
-    if (!s.closureFixed) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onFixCorner, modifier = Modifier.weight(1f).testTag("gps_fix_corner")) {
-                Text("Fijar esquina ${s.cornersFixed + 1}")
-            }
-            OutlinedButton(
-                onClick = onFixStart, enabled = s.cornersFixed >= 3,
-                modifier = Modifier.weight(1f).testTag("gps_fix_start"),
-            ) { Text("Volver a fijar el inicio") }
         }
     }
 }

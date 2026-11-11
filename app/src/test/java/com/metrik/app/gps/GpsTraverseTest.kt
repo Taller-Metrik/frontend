@@ -42,14 +42,33 @@ class GpsTraverseTest {
         return pts to idx
     }
 
+    /** Lecturas GPS en movimiento: cada ~8 pasos, la posición real de ese paso con ruido σ = 2 m. */
+    private fun gpsAlongSides(idx: List<Int>, trackSize: Int, seed: Long): List<GpsTraverse.GpsObs> {
+        val rnd = java.util.Random(seed)
+        val knots = listOf(0) + idx + listOf(trackSize - 1)
+        val obs = mutableListOf<GpsTraverse.GpsObs>()
+        for (side in 0 until 4) {
+            val a = truth[side]
+            val b = truth[(side + 1) % 4]
+            val (ia, ib) = knots[side] to knots[side + 1]
+            var i = ia + 4
+            while (i < ib) {
+                val f = (i - ia).toDouble() / (ib - ia)
+                obs += GpsTraverse.GpsObs(i, Point(a.x + (b.x - a.x) * f + rnd.nextGaussian() * 2, a.y + (b.y - a.y) * f + rnd.nextGaussian() * 2), 2.0)
+                i += 8
+            }
+        }
+        return obs
+    }
+
     @Test
     @Evidencia(
         id = "FU-75", nombre = "Poligonal ajustada a las esquinas y cerrada en la partida", requisito = "RF-08 / RF-18 / RF-19",
-        objetivo = "Verificar que, con las esquinas marcadas (y la posición GPS promediada en 3 de ellas), el polígono queda "
-            + "en las esquinas reales aunque la brújula haya girado la figura y torcido un lado, que el cierre se reparte "
-            + "hasta terminar exactamente en la partida y que el recorrido corregido pasa por cada esquina.",
-        entrada = "Rectángulo 100×60 m por pasos: figura girada 8° y escalada 0,94; lado 3 torcido 15° más; anclas GPS "
-            + "(σ 1,5 m) en las esquinas 1, 2 y 4 (la 3 sin lecturas); lecturas finales en la partida",
+        objetivo = "Verificar que, con las esquinas marcadas, el GPS de cada tramo y la posición GPS promediada en 3 de ellas, "
+            + "el polígono queda en las esquinas reales aunque la brújula haya girado la figura y torcido un lado, que el cierre "
+            + "se reparte hasta terminar exactamente en la partida y que el recorrido corregido pasa por cada esquina.",
+        entrada = "Rectángulo 100×60 m por pasos: figura girada 8° y escalada 0,94; lado 3 torcido 15° más; GPS en movimiento "
+            + "cada 8 pasos (σ 2 m); anclas GPS (σ 1,5 m) en las esquinas 1, 2 y 4 (la 3 sin lecturas quietas); lecturas finales en la partida",
         esperado = "Vértices a < 2 m de los reales, área 6000 m² ± 3 %, cierre repartido (termina en la partida) y el "
             + "recorrido pasa por las 4 esquinas",
     )
@@ -60,7 +79,10 @@ class GpsTraverseTest {
             GpsTraverse.Anchor(Point(99.6, 60.5), 1.5),
             null,
         )
-        val r = GpsTraverse.adjust(track, idx, anchors, endAnchor = GpsTraverse.Anchor(Point(0.3, -0.4), 1.2), startSigmaM = 1.0)
+        val r = GpsTraverse.adjust(
+            track, idx, anchors, endAnchor = GpsTraverse.Anchor(Point(0.3, -0.4), 1.2), startSigmaM = 1.0,
+            gps = gpsAlongSides(idx, track.size, seed = 21),
+        )
         val errors = truth.map { t -> r.vertices.minOf { Geometry.euclidean(it, t) } }
         val area = Geometry.analyze(r.vertices).areaM2
         val through = r.vertices.all { v -> r.track.any { Geometry.euclidean(it, v) < 1e-6 } }

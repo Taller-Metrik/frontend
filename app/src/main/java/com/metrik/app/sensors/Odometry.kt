@@ -240,6 +240,17 @@ class StepDetector(
 }
 
 /**
+ * Media circular de rumbos en radianes (sin el salto de ±180°): el balanceo del brazo al caminar da lecturas a
+ * ambos lados del rumbo real y promediarlas a secas cerca del norte daría el sur.
+ */
+fun circularMeanRad(headingsRad: List<Double>): Double {
+    require(headingsRad.isNotEmpty()) { "Se necesita al menos un rumbo" }
+    val x = headingsRad.sumOf { kotlin.math.cos(it) }
+    val y = headingsRad.sumOf { kotlin.math.sin(it) }
+    return kotlin.math.atan2(y, x)
+}
+
+/**
  * Filtro de pasos por racha. El [StepDetector] cuenta como paso cualquier pico de aceleración, y con el
  * celular en la mano un gesto (mirar la pantalla, girar la muñeca) ya lo produce: quieto, el recorrido
  * avanzaba solo. Aquí un paso solo cuenta si forma parte de una racha de [confirmSteps] pasos seguidos,
