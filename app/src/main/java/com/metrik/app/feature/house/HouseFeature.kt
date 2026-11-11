@@ -193,6 +193,13 @@ class HouseViewModel(
         s.copy(poses = s.poses + (id to p.copy(rotRad = p.rotRad + Math.toRadians(degrees))), active = id)
     }
 
+    /** Deja el ambiente derecho (su muro más largo horizontal o vertical). */
+    fun straightenRoom(id: Long) = edit { s ->
+        val p = s.poses[id] ?: return@edit s
+        val room = s.room(id) ?: return@edit s
+        s.copy(poses = s.poses + (id to HouseLayout.straighten(room.vertices, p)), active = id)
+    }
+
     fun setThickness(text: String) = edit { it.copy(thickness = text) }
 
     /**
@@ -242,11 +249,12 @@ class HouseViewModel(
      */
     fun autoJoin() {
         val s = _state.value
-        val owners = s.rooms.flatMap { r -> r.capture?.doors.orEmpty().map { d -> d.name.lowercase() to (r to d) } }
+        // El nombre de la puerta se escribe a mano: se compara sin mayúsculas ni espacios de más
+        val owners = s.rooms.flatMap { r -> r.capture?.doors.orEmpty().map { d -> d.name.trim().lowercase() to (r to d) } }
             .distinctBy { it.first }.toMap()
         val joins = s.rooms.mapNotNull { r ->
             val name = r.capture?.startDoor ?: return@mapNotNull null
-            val (owner, door) = owners[name.lowercase()] ?: return@mapNotNull null
+            val (owner, door) = owners[name.trim().lowercase()] ?: return@mapNotNull null
             if (owner.id == r.id) return@mapNotNull null
             val start = r.points.firstOrNull() ?: r.vertices.first()
             JoinInput(a = owner.id, b = r.id, aPoint = Point(door.x, door.y), bPoint = start, door = door.name)
@@ -499,10 +507,17 @@ private fun InteractivePanel(s: HouseUiState, vm: HouseViewModel) {
         active?.let { "Girar «${s.room(it)?.name}»:" } ?: "Toca un ambiente para girarlo",
         style = MaterialTheme.typography.bodySmall,
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Los botones pasan a la fila siguiente si no caben (pantallas angostas)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         listOf(90.0 to "↺ 90°", -90.0 to "↻ 90°", 15.0 to "↺ 15°", -15.0 to "↻ 15°").forEach { (deg, label) ->
-            OutlinedButton(onClick = { active?.let { vm.rotateRoom(it, deg) } }, enabled = active != null) { Text(label) }
+            OutlinedButton(onClick = { active?.let { vm.rotateRoom(it, deg) } }, enabled = active != null) {
+                Text(label, maxLines = 1)
+            }
         }
+        OutlinedButton(
+            onClick = { active?.let(vm::straightenRoom) }, enabled = active != null,
+            modifier = Modifier.testTag("house_straighten"),
+        ) { Text("Enderezar", maxLines = 1) }
     }
     OutlinedTextField(
         s.thickness, vm::setThickness, Modifier.fillMaxWidth(), label = { Text("Espesor del muro entre ambientes (m)") },

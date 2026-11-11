@@ -60,10 +60,32 @@ object HouseLayout {
     fun initialPoses(locals: List<List<Point>>): List<RoomPose> {
         var cursor = 0.0
         return locals.map { v ->
-            val pose = RoomPose(dx = cursor - v.minOf { it.x }, dy = -v.minOf { it.y })
-            cursor += v.maxOf { it.x } - v.minOf { it.x } + INITIAL_GAP_M
+            // Enderezado (muros horizontales y verticales), luego a la derecha del anterior
+            val straight = straighten(v, RoomPose())
+            val w = world(v, straight)
+            val pose = straight.copy(dx = cursor - w.minOf { it.x }, dy = -w.minOf { it.y })
+            cursor += w.maxOf { it.x } - w.minOf { it.x } + INITIAL_GAP_M
             pose
         }
+    }
+
+    /**
+     * Endereza el ambiente: lo gira lo mínimo (± 45°) para que su muro más largo quede horizontal o vertical.
+     * Un recorrido no empieza alineado al norte, así que el ambiente medido suele quedar en diagonal; enderezado,
+     * con giros de 90° calza con los demás.
+     */
+    fun straighten(local: List<Point>, pose: RoomPose): RoomPose {
+        val w = world(local, pose)
+        val longest = w.indices.maxByOrNull { i -> val a = w[i]; val b = w[(i + 1) % w.size]; hypot(b.x - a.x, b.y - a.y) }
+            ?: return pose
+        val a = w[longest]
+        val b = w[(longest + 1) % w.size]
+        val ang = atan2(b.y - a.y, b.x - a.x)
+        val quarter = PI / 2
+        var off = ang % quarter
+        if (off > quarter / 2) off -= quarter
+        if (off < -quarter / 2) off += quarter
+        return pose.copy(rotRad = pose.rotRad - off)
     }
 
     /** true si el punto está dentro del ambiente (para saber qué ambiente toca el dedo). */

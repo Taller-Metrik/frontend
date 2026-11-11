@@ -254,12 +254,18 @@ fun MeasureScreen(
                 ErrorBanner(s.error)
                 when (s.phase) {
                     MeasurePhase.IDLE -> Column {
+                    // Puerta donde empieza el recorrido (para unir este ambiente solo): se escribe; las ya marcadas en
+                    // otros ambientes aparecen como sugerencias
+                    Text("¿Empiezas en una puerta? Escribe su nombre (opcional)", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        s.startDoor.orEmpty(), { vm.setStartDoor(it.ifBlank { null }) }, Modifier.fillMaxWidth().testTag("start_door_name"),
+                        label = { Text("Puerta (p. ej. cocina, pasadizo)") }, singleLine = true,
+                    )
                     if (s.availableDoors.isNotEmpty()) {
-                        Text("¿Empiezas en una puerta marcada? (para unir este ambiente solo)", style = MaterialTheme.typography.bodySmall)
+                        Text("Puertas ya marcadas:", style = MaterialTheme.typography.bodySmall)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            FilterChip(s.startDoor == null, { vm.setStartDoor(null) }, { Text("No") })
                             s.availableDoors.forEach { d ->
-                                FilterChip(s.startDoor == d, { vm.setStartDoor(d) }, { Text("Puerta «$d»") }, Modifier.testTag("start_door_$d"))
+                                FilterChip(s.startDoor == d, { vm.setStartDoor(d) }, { Text(d) }, Modifier.testTag("start_door_$d"))
                             }
                         }
                     }
