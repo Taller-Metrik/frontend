@@ -15,7 +15,7 @@ import kotlin.math.sin
 class GpsInicioTest {
     @get:Rule val ev = EvidenceRule()
 
-    private class Run(val maxJumpM: Double, val maxEarlyShiftM: Double, val endErrorM: Double, val areaErrPct: Double)
+    private class Run(val maxJumpM: Double, val maxEarlyShiftM: Double, val endErrorM: Double, val areaErrPct: Double, val startMoveM: Double)
 
     /**
      * Rectángulo 40 × 30 m caminado con pasos reales de 0,77 m (la app supone 0,70 m) y la brújula desviada
@@ -56,7 +56,10 @@ class GpsInicioTest {
         val track = f.track()
         val polygon = listOf(track[0]) + corners.drop(1).dropLast(1).map { c -> track.minBy { Geometry.euclidean(it, c) } }
         val area = Geometry.analyze(polygon).areaM2
-        return Run(maxJump, maxEarly, Geometry.euclidean(track.last(), trueTrack.last()), 100 * kotlin.math.abs(area - 1200.0) / 1200.0)
+        return Run(
+            maxJump, maxEarly, Geometry.euclidean(track.last(), trueTrack.last()), 100 * kotlin.math.abs(area - 1200.0) / 1200.0,
+            Geometry.euclidean(track.first(), Point(0.0, 0.0)),
+        )
     }
 
     @Test
@@ -82,17 +85,16 @@ class GpsInicioTest {
     @Evidencia(
         id = "FU-82", nombre = "Brújula recién encendida al empezar", requisito = "RF-07",
         objetivo = "Verificar que un desvío fuerte de la brújula en los primeros pasos (magnetómetro sin asentar) no "
-            + "hace saltar el trazo y que al final el recorrido queda bien ajustado.",
+            + "hace saltar el trazo en pantalla ni mueve la partida. (El terreno final de este caso lo verifica FU-86: "
+            + "al finalizar cada tramo se corrige con su GPS.)",
         entrada = "Mismo rectángulo; brújula desviada 5° y 40° más en los primeros 12 pasos; 10 semillas",
-        esperado = "Salto por lectura GPS < 1,5 m; error del final < 4 m; área ± 10 %",
+        esperado = "Salto por lectura GPS < 1,5 m; la partida no se mueve",
     )
     fun brujulaRecienEncendida() {
         val runs = (1L..10L).map { walk(it, biasDeg = 5.0, transientSteps = 12, transientDeg = 40.0) }
-        ev.obtenido = "salto máx=${"%.2f".format(runs.maxOf { it.maxJumpM })} m, " +
-            "error final máx=${"%.2f".format(runs.maxOf { it.endErrorM })} m, error de área máx=${"%.1f".format(runs.maxOf { it.areaErrPct })} %"
+        ev.obtenido = "salto máx=${"%.2f".format(runs.maxOf { it.maxJumpM })} m, partida movida máx=${"%.3f".format(runs.maxOf { it.startMoveM })} m"
         assertTrue(runs.all { it.maxJumpM < 1.5 })
-        assertTrue(runs.all { it.endErrorM < 4.0 })
-        assertTrue(runs.all { it.areaErrPct < 10.0 })
+        assertTrue(runs.all { it.startMoveM < 1e-6 })
     }
     @Test
     @Evidencia(

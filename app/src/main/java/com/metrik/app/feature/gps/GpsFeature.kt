@@ -302,7 +302,9 @@ class GpsViewModel(
             val samples = f.track().mapIndexed { i, p ->
                 if (i == 0) o else GpsMath.fromEnu(p, o.lat, o.lon, STEP_POINT_ACCURACY_M, times.getOrElse(i) { wallClockS() })
             }
-            _state.update { extra(it.copy(samples = samples, track = GpsMath.toEnu(samples))) }
+            val track = GpsMath.toEnu(samples)
+            // Las esquinas se dibujan sobre el trazo ya corregido (no donde estaba al marcarlas)
+            _state.update { extra(it.copy(samples = samples, track = track, cornerPoints = cornerIdx.mapNotNull(track::getOrNull))) }
         }
         _state.update { it.copy(usingSteps = true, steps = 0, gpsCorrections = 0) }
         settleSteps = {
@@ -559,6 +561,7 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                     track = s.track, polygon = s.polygon,
                     corners = if (s.phase == GpsPhase.FINISHED) s.polygon else s.cornerPoints,
                     current = if (s.phase == GpsPhase.RECORDING) s.track.lastOrNull() else null,
+                    start = if (s.phase == GpsPhase.RECORDING) s.track.firstOrNull() else null,
                     numberWalls = s.phase == GpsPhase.FINISHED,
                 )
             }

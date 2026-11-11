@@ -49,13 +49,14 @@ class GpsCornersViewModelTest {
         }
 
         /** Camina de a a b: un paso cada 0,5 s con rumbo de brújula (0 = norte, π/2 = este) con ruido de 6°, GPS cada 2 s (σ 3 m). */
-        suspend fun walk(a: Point, b: Point, headingBiasDeg: Double = 0.0) {
+        suspend fun walk(a: Point, b: Point, headingBiasDeg: Double = 0.0, transientSteps: Int = 0, transientDeg: Double = 0.0) {
             val len = Geometry.euclidean(a, b)
             val heading = Math.atan2(b.x - a.x, b.y - a.y) + Math.toRadians(headingBiasDeg)
             val steps = (len / 0.7).toInt()
             for (k in 1..steps) {
                 nowNs += 500_000_000L; t += 0.5
-                compass.emit(heading + Math.toRadians(rnd.nextGaussian() * 6))
+                val extra = if (k <= transientSteps) transientDeg else 0.0
+                compass.emit(heading + Math.toRadians(extra + rnd.nextGaussian() * 6))
                 if (k % 4 == 0) {
                     val f = k.toDouble() / steps
                     gps.emit(
@@ -206,5 +207,34 @@ class GpsCornersViewModelTest {
         assertEquals(4, done.polygon.size)
         assertTrue(errors.all { it < 3.0 })
         assertEquals(6000.0, done.analysis!!.areaM2, 180.0)
+    }
+    @Test
+    @Evidencia(
+        id = "FU-86", nombre = "Brújula torcida al empezar: el terreno final sale bien", requisito = "RF-08 / RF-18 / RF-19",
+        objetivo = "Verificar que, con la partida fija, un desvío fuerte de la brújula en los primeros pasos no estropea "
+            + "el terreno guardado: al finalizar, cada tramo se corrige con su propio GPS y la figura cierra en la partida.",
+        entrada = "Rectángulo 100×60 m como FU-48, con la brújula desviada 40° en los primeros 12 pasos",
+        esperado = "4 vértices a < 3 m de los reales, área 6000 m² ± 3 %, figura cerrada en la partida",
+    )
+    fun brujulaTorcidaAlEmpezar() = runBlocking {
+        val sim = Sim(seed = 11)
+        sim.calibrateAndStart()
+        for (side in 0 until 4) {
+            val a = truth[side]
+            val b = truth[(side + 1) % 4]
+            sim.walk(a, b, transientSteps = if (side == 0) 12 else 0, transientDeg = 40.0)
+            sim.nowNs += 4_000_000_000L
+            if (side < 3) sim.vm.fixCorner()
+            sim.still(b, 6)
+        }
+        sim.vm.finish()
+        val done = sim.vm.state.value
+        val errors = truth.map { tr -> done.polygon.minOf { Geometry.euclidean(it, tr) } }
+        ev.obtenido = "errores=${errors.map { "%.1f".format(it) }}, área=${"%.1f".format(done.analysis?.areaM2)}, " +
+            "cerrada=${done.closureConsistent}, error=${done.error}"
+        assertEquals(4, done.polygon.size)
+        assertTrue(errors.all { it < 3.0 })
+        assertEquals(6000.0, done.analysis!!.areaM2, 180.0)
+        assertEquals(true, done.closureConsistent)
     }
 }

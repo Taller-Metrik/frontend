@@ -25,6 +25,10 @@ import kotlin.math.sqrt
  * dibuja ([position], [track]) se acerca al ajuste de a poco ([maxRotationStepRad], [maxScaleStep] por
  * actualización); el control de rebotes usa siempre el ajuste completo y [settle] lo aplica entero al terminar.
  *
+ * **Partida fija:** la partida es el centro de las lecturas quietas del inicio (el origen). El ajuste solo gira y
+ * escala la figura de los pasos alrededor de ella, sin trasladarla: antes la traslación la corría metros y, al
+ * volver a la partida, la figura no cerraba (29 m en una prueba real).
+ *
  * Coordenadas locales ENU en metros: x = este, y = norte, origen en el punto de partida.
  */
 class PdrGpsFusion(
@@ -147,13 +151,21 @@ class PdrGpsFusion(
         // si no (recorrido corto), solo se ajusta la ubicación.
         val spreadEnough = varP > 0 && varQ / w > 4 * meanAcc2
         if (spreadEnough) {
-            targetRotation = atan2(b, a).coerceIn(-maxRotationRad, maxRotationRad)
-            targetScale = (hypot(a, b) / varP).coerceIn(1 - maxScaleError, 1 + maxScaleError)
+            // Giro y escala alrededor de la partida (fija en el origen): sumas sin centrar
+            var a0 = 0.0; var b0 = 0.0; var p0 = 0.0
+            for (p in pairs) {
+                a0 += p.w * (p.pdr.x * p.gps.x + p.pdr.y * p.gps.y)
+                b0 += p.w * (p.pdr.x * p.gps.y - p.pdr.y * p.gps.x)
+                p0 += p.w * (p.pdr.x * p.pdr.x + p.pdr.y * p.pdr.y)
+            }
+            targetRotation = atan2(b0, a0).coerceIn(-maxRotationRad, maxRotationRad)
+            targetScale = if (p0 > 0) (hypot(a0, b0) / p0).coerceIn(1 - maxScaleError, 1 + maxScaleError) else 1.0
         } else {
             targetRotation = 0.0
             targetScale = 1.0
         }
-        this.mpx = mpx; this.mpy = mpy; this.mqx = mqx; this.mqy = mqy
+        // Sin traslación: la partida queda en el origen
+        this.mpx = 0.0; this.mpy = 0.0; this.mqx = 0.0; this.mqy = 0.0
         approachTarget()
     }
 }
