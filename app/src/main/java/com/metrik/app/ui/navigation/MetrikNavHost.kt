@@ -34,6 +34,8 @@ import com.metrik.app.feature.fence.FenceScreen
 import com.metrik.app.feature.fence.FenceViewModel
 import com.metrik.app.feature.finishes.FinishesScreen
 import com.metrik.app.feature.finishes.FinishesViewModel
+import com.metrik.app.feature.house.HouseScreen
+import com.metrik.app.feature.house.HouseViewModel
 import com.metrik.app.feature.plan.mimeTypeFor
 import com.metrik.app.feature.plan.saveToDownloads
 import com.metrik.app.feature.projects.ProjectDetailScreen
@@ -62,6 +64,8 @@ object Routes {
     fun fence(localId: Long) = "fence/$localId"
     const val FINISHES = "finishes/{localId}"
     fun finishes(localId: Long) = "finishes/$localId"
+    const val HOUSE = "house/{projectId}"
+    fun house(projectId: Int) = "house/$projectId"
 
     fun project(id: Int, name: String) = "project/$id/${Uri.encode(name)}"
     fun measure(projectId: Int) = "measure/$projectId"
@@ -118,6 +122,7 @@ fun MetrikNavHost(container: AppContainer) {
                 onMeasureInterior = { nav.navigate(Routes.measure(id)) },
                 onMeasureExterior = { nav.navigate(Routes.gps(id)) },
                 onOpenPlan = { nav.navigate(Routes.plan(it)) },
+                onHousePlan = { nav.navigate(Routes.house(id)) },
             )
         }
         composable(Routes.MEASURE, arguments = listOf(navArgument("projectId") { type = NavType.IntType })) { entry ->
@@ -160,6 +165,15 @@ fun MetrikNavHost(container: AppContainer) {
             val localId = entry.arguments!!.getLong("localId")
             val vm = viewModel { FenceViewModel(localId, container.surveys, container.fences) }
             FenceScreen(vm, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.HOUSE, arguments = listOf(navArgument("projectId") { type = NavType.IntType })) { entry ->
+            val projectId = entry.arguments!!.getInt("projectId")
+            val vm = viewModel {
+                HouseViewModel(projectId, container.surveys, container.floorPlans) { name, bytes ->
+                    saveToDownloads(context, name, bytes, mimeTypeFor(name))
+                }
+            }
+            HouseScreen(vm, onBack = { nav.popBackStack() })
         }
         composable(Routes.FINISHES, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
             val localId = entry.arguments!!.getLong("localId")

@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Satellite
 import androidx.compose.material.icons.filled.Settings
@@ -163,6 +164,7 @@ fun ProjectDetailScreen(
     onMeasureInterior: () -> Unit,
     onMeasureExterior: () -> Unit,
     onOpenPlan: (Long) -> Unit,
+    onHousePlan: () -> Unit = {},
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
     val local by vm.local.collectAsStateWithLifecycle()
@@ -198,6 +200,16 @@ fun ProjectDetailScreen(
                         headlineContent = { Text("Medir un terreno con GPS") },
                         supportingContent = { Text("Terrenos, canchas, manzanas (más de 30 m). Recorres el borde.") },
                         leadingContent = { Icon(Icons.Filled.Satellite, null, tint = MaterialTheme.colorScheme.primary) },
+                    )
+                }
+            }
+            // Plano de vivienda (CU-08): une los ambientes ya medidos por sus muros compartidos
+            if (local.count { it.mode == SurveyMode.INTERIOR } >= 2) item {
+                Card(Modifier.fillMaxWidth().clickable(onClick = onHousePlan).testTag("house_plan")) {
+                    ListItem(
+                        headlineContent = { Text("Plano de vivienda") },
+                        supportingContent = { Text("Une los ambientes medidos por sus muros: planta completa, cuadro de áreas y DXF.") },
+                        leadingContent = { Icon(Icons.Filled.Home, null, tint = MaterialTheme.colorScheme.primary) },
                     )
                 }
             }

@@ -53,6 +53,14 @@ interface MetrikApi {
     @GET("surveys/{id}/report.pdf")
     suspend fun reportPdf(@Path("id") id: Int): ResponseBody
 
+    /** Plano de vivienda: une los ambientes del proyecto por sus muros (CU-08, RF-25). */
+    @POST("projects/{id}/floor-plan")
+    suspend fun floorPlan(@Path("id") id: Int, @Body body: FloorPlanInDto): FloorPlanOutDto
+
+    /** DXF de la vivienda completa (RF-26). */
+    @POST("projects/{id}/floor-plan.dxf")
+    suspend fun floorPlanDxf(@Path("id") id: Int, @Body body: FloorPlanInDto): ResponseBody
+
     /** Metrado y presupuesto del cerco perimétrico (CU-09, RF-24, RF-27). */
     @POST("surveys/{id}/fence")
     suspend fun fence(@Path("id") id: Int, @Body body: FenceInDto): FenceOutDto

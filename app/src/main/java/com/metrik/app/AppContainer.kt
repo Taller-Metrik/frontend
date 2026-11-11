@@ -47,6 +47,9 @@ class AppContainer(context: Context) {
     val finishes: com.metrik.app.data.repository.FinishesRepository by lazy {
         com.metrik.app.data.repository.DefaultFinishesRepository(api)
     }
+    val floorPlans: com.metrik.app.data.repository.FloorPlanRepository by lazy {
+        com.metrik.app.data.repository.DefaultFloorPlanRepository(api)
+    }
     val validation: ValidationRepository by lazy { DefaultValidationRepository(api) }
     val calibrations: com.metrik.app.data.repository.CalibrationRepository by lazy {
         com.metrik.app.data.repository.DefaultCalibrationRepository(api)
