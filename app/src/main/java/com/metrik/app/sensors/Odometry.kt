@@ -278,4 +278,17 @@ class WalkingGate(
         walking = true
         return pending.toList().also { pending.clear() }
     }
+
+    /** Pasos retenidos (racha sin confirmar todavía). */
+    val pendingCount: Int get() = pending.size
+
+    /**
+     * Entrega ya los pasos retenidos de una racha que no llegó a [confirmSteps]. Se usa al tocar «Esquina»: el toque
+     * confirma que se caminó (un lado de 1–2 m son solo 1–2 pasos tras detenerse en la esquina anterior).
+     */
+    fun flushPending(): List<Double> {
+        if (pending.isEmpty()) return emptyList()
+        walking = true
+        return pending.toList().also { pending.clear() }
+    }
 }

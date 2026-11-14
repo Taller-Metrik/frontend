@@ -32,6 +32,9 @@ import kotlin.math.hypot
  * 4. **Casi colineal:** el rumbo cambia menos de [COLLINEAR_TURN_DEG] y la esquina se aparta menos de
  *    [COLLINEAR_OFFSET_M] de la recta entre sus vecinas.
  *
+ * Las esquinas que la persona confirmó tocando dos veces (lado de menos de 2 m, esquina junto a la partida; ver
+ * [com.metrik.app.feature.gps.GpsCornerTap]) no se descartan por ninguna regla.
+ *
  * Siempre quedan al menos [MIN_CORNERS] esquinas (lo que exige el ajuste). Si no hay nada espurio devuelve todas.
  */
 object GpsCornerCleanup {
@@ -56,9 +59,11 @@ object GpsCornerCleanup {
      * @param track recorrido con la partida en el primer punto y el final (de vuelta en la partida) en el último.
      * @param cornerIdx índice del recorrido de cada esquina, en orden.
      * @param anchors ancla GPS de cada esquina (o null): ante un doble toque se conserva la que tiene ancla.
+     * @param locked posiciones (en [cornerIdx]) de las esquinas que la persona confirmó tocando dos veces (un lado de
+     *   menos de 2 m, una esquina junto a la partida): ninguna regla las descarta.
      * @return posiciones (en [cornerIdx]) de las esquinas que se conservan, en orden.
      */
-    fun keep(track: List<Point>, cornerIdx: List<Int>, anchors: List<GpsTraverse.Anchor?>): List<Int> {
+    fun keep(track: List<Point>, cornerIdx: List<Int>, anchors: List<GpsTraverse.Anchor?>, locked: Set<Int> = emptySet()): List<Int> {
         require(cornerIdx.size == anchors.size) { "Cada esquina necesita su ancla (o null)" }
         if (track.size < 2 || cornerIdx.size <= MIN_CORNERS || cornerIdx.any { it !in track.indices }) return cornerIdx.indices.toList()
         val cum = DoubleArray(track.size)
@@ -69,11 +74,15 @@ object GpsCornerCleanup {
         fun p(j: Int) = track[cornerIdx[kept[j]]]
         fun prev(j: Int) = if (j == 0) start else p(j - 1)
         fun next(j: Int) = if (j == kept.lastIndex) end else p(j + 1)
+        // Confirmada por la persona (segundo toque): ninguna regla la descarta
+        fun free(j: Int) = kept[j] !in locked
 
         while (kept.size > MIN_CORNERS) {
-            // 1. Doble toque: se queda la que tiene ancla (si la segunda la tiene y la primera no)
+            // 1. Doble toque: se queda la que tiene ancla (si la segunda la tiene y la primera no). Si alguna de las dos
+            //    está confirmada, el lado corto es real y no se toca
             val tap = (1 until kept.size).firstOrNull { j ->
-                Geometry.euclidean(p(j - 1), p(j)) < DOUBLE_TAP_M && cum[cornerIdx[kept[j]]] - cum[cornerIdx[kept[j - 1]]] < DOUBLE_TAP_PATH_M
+                free(j - 1) && free(j) &&
+                    Geometry.euclidean(p(j - 1), p(j)) < DOUBLE_TAP_M && cum[cornerIdx[kept[j]]] - cum[cornerIdx[kept[j - 1]]] < DOUBLE_TAP_PATH_M
             }
             if (tap != null) {
                 val drop = if (anchors[kept[tap - 1]] == null && anchors[kept[tap]] != null) tap - 1 else tap
@@ -82,7 +91,7 @@ object GpsCornerCleanup {
             // 2. En la partida al final: solo la última esquina (luego se revisa la anterior)
             val last = kept.lastIndex
             val dEnd = Geometry.euclidean(p(last), end)
-            if (dEnd < START_RADIUS_M || (dEnd < START_RADIUS_SOFT_M && offset(p(last), prev(last), end) < START_SOFT_OFFSET_M)) {
+            if (free(last) && (dEnd < START_RADIUS_M || (dEnd < START_RADIUS_SOFT_M && offset(p(last), prev(last), end) < START_SOFT_OFFSET_M))) {
                 kept.removeAt(last); continue
             }
             // 2b. Ida y vuelta junto a la partida: las últimas esquinas, todas cerca del final
@@ -99,14 +108,17 @@ object GpsCornerCleanup {
                 val sign = signedArea(listOf(start) + outside + kept.subList(first, kept.size).map { track[cornerIdx[it]] }).let { if (it < 0) -1.0 else 1.0 }
                 val best = (first until kept.size).maxByOrNull { j -> sign * signedArea(listOf(start) + outside + p(j)) }!!
                 val candidates = (first until kept.size).filter { it != best }.reversed()
-                // Si la única del grupo es la que vuelve atrás, sale ella
-                val drop = (candidates.ifEmpty { listOf(best) }).take(kept.size - MIN_CORNERS)
-                drop.forEach { kept.removeAt(it) }
-                continue
+                // Si la única del grupo es la que vuelve atrás, sale ella (salvo las confirmadas)
+                val drop = (candidates.ifEmpty { listOf(best) }).filter(::free).take(kept.size - MIN_CORNERS)
+                if (drop.isNotEmpty()) {
+                    drop.forEach { kept.removeAt(it) }
+                    continue
+                }
             }
             // 3. Zigzag: dos esquinas cercanas que giran fuerte en sentidos opuestos y vuelven a la misma recta
             if (kept.size - 2 >= MIN_CORNERS) {
                 val zig = (0 until kept.lastIndex).firstOrNull { j ->
+                    if (!free(j) || !free(j + 1)) return@firstOrNull false
                     val a = p(j); val b = p(j + 1); val pa = prev(j); val nb = next(j + 1)
                     val ta = turnDeg(pa, a, b); val tb = turnDeg(a, b, nb)
                     Geometry.euclidean(a, b) < ZIGZAG_SIDE_M && abs(ta) > ZIGZAG_TURN_DEG && abs(tb) > ZIGZAG_TURN_DEG &&
@@ -118,7 +130,7 @@ object GpsCornerCleanup {
             }
             // 4. Casi colineal: se descarta la que menos dobla
             val flat = kept.indices.filter { j ->
-                abs(turnDeg(prev(j), p(j), next(j))) < COLLINEAR_TURN_DEG && offset(p(j), prev(j), next(j)) < COLLINEAR_OFFSET_M
+                free(j) && abs(turnDeg(prev(j), p(j), next(j))) < COLLINEAR_TURN_DEG && offset(p(j), prev(j), next(j)) < COLLINEAR_OFFSET_M
             }.minByOrNull { j -> abs(turnDeg(prev(j), p(j), next(j))) }
             if (flat != null) { kept.removeAt(flat); continue }
             break

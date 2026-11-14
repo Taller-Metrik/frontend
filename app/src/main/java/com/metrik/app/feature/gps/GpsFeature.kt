@@ -153,8 +153,14 @@ class GpsViewModel(
     private val cornerIdx = mutableListOf<Int>()
     /** Esquina en la que la persona sigue quieta desde el toque; null en cuanto vuelve a caminar. */
     private var currentCorner: Int? = null
-    /** Dónde se avisó «estás en la partida» al tocar «Esquina»: tocar de nuevo ahí confirma que es una esquina. */
-    private var startWarnedAt: Point? = null
+    /** Dónde se avisó «lado corto» o «estás en la partida» al tocar «Esquina»: tocar de nuevo ahí confirma la esquina. */
+    private var warnedAt: Point? = null
+    /** Esquinas (posición en [cornerIdx]) que la persona confirmó con un segundo toque: la limpieza final no las borra. */
+    private val lockedCorners = mutableSetOf<Int>()
+    /** Aplica los pasos que el filtro de caminata aún retiene (null = solo GPS, sin pasos). */
+    private var flushSteps: (() -> Unit)? = null
+    /** Lecturas quietas que había cuando llegó el primer paso retenido: las siguientes ya son del lugar nuevo. */
+    private var stillMarkAtPending: Int? = null
     /** Lecturas quietas desde el último movimiento (la pausa natural en una esquina o en la partida). */
     private val stillBuffer = mutableListOf<GpsSample>()
     /** Lecturas GPS en movimiento usadas para corregir los pasos, con el punto del recorrido al que corresponden. */
@@ -217,50 +223,78 @@ class GpsViewModel(
 
     /**
      * Marca la esquina donde está la persona, al toque (RF-18). Las lecturas quietas desde que se detuvo y las que
-     * sigan mientras no camine se promedian para anclarla. Un segundo toque sin haber caminado no cuenta.
+     * sigan mientras no camine se promedian para anclarla. Ningún toque se descarta sin aviso: uno sin haber caminado
+     * lo dice, y un lado corto o una esquina junto a la partida se confirman tocando otra vez en el mismo lugar.
      */
     fun fixCorner() {
+        if (_state.value.phase != GpsPhase.RECORDING) return
+        // Tocar «Esquina» confirma que se caminó: los 1–2 pasos que el filtro retiene tras una pausa son el lado corto
+        flushSteps?.invoke()
         val s = _state.value
-        if (s.phase != GpsPhase.RECORDING) return
         val idx = s.track.lastIndex
         if (idx <= 0) {
             _state.update { it.copy(error = "Todavía no hay recorrido: camina hasta la esquina y vuelve a tocar «Esquina»") }
             return
         }
-        if (currentCorner != null || (cornerIdx.isNotEmpty() && idx <= cornerIdx.last())) return
-        // Al final del recorrido: un toque junto a la última esquina o ya en la partida no es una esquina nueva
+        if (currentCorner != null || (cornerIdx.isNotEmpty() && idx <= cornerIdx.last())) {
+            log("esquina", null, note = "ignorada: sin caminar desde la esquina ${s.cornersFixed}")
+            _state.update {
+                it.copy(error = "Ya marcaste la esquina ${s.cornersFixed}: camina hasta la siguiente y vuelve a tocar «Esquina».")
+            }
+            return
+        }
         val here = s.track[idx]
         val last = cornerIdx.lastOrNull()?.let(s.track::getOrNull)
         val radius = GpsCornerTap.startRadiusM(s.calibration?.r95M)
-        when (GpsCornerTap.decide(here, s.track.first(), last, s.cornersFixed, radius, startWarnedAt)) {
-            GpsCornerTap.Decision.DOUBLE_TAP -> {
-                log("esquina", null, x = here.x, y = here.y, note = "ignorada: doble toque")
+        val decision = GpsCornerTap.decide(here, s.track.first(), last, s.cornersFixed, radius, warnedAt)
+        when (decision) {
+            GpsCornerTap.Decision.SHORT_SIDE -> {
+                warnedAt = here
+                val d = Geometry.euclidean(here, last!!)
+                log("esquina", null, x = here.x, y = here.y, note = "por confirmar: lado corto ${"%.1f".format(Locale.US, d)} m")
                 _state.update {
-                    it.copy(error = "Esquina ignorada: estás a menos de ${GpsCornerTap.DOUBLE_TAP_M.toInt()} m de la esquina " +
-                        "${s.cornersFixed}. Camina hasta la siguiente esquina.")
+                    it.copy(error = "Lado corto: estás a ${"%.1f".format(Locale.US, d)} m de la esquina ${s.cornersFixed}. " +
+                        "Si de verdad es una esquina, vuelve a tocar «Esquina» aquí.")
                 }
                 return
             }
             GpsCornerTap.Decision.AT_START -> {
-                startWarnedAt = here
-                log("esquina", null, x = here.x, y = here.y, note = "ignorada: en la partida")
+                warnedAt = here
+                log("esquina", null, x = here.x, y = here.y, note = "por confirmar: en la partida")
                 _state.update {
                     it.copy(error = "Estás en la partida: toca Finalizar. Si de verdad es una esquina, vuelve a tocar «Esquina» aquí.")
                 }
                 return
             }
-            GpsCornerTap.Decision.MARK -> startWarnedAt = null
+            GpsCornerTap.Decision.MARK, GpsCornerTap.Decision.CONFIRMED -> warnedAt = null
         }
         val vertex = s.cornersFixed + 1
         cornerIdx += idx
+        if (decision == GpsCornerTap.Decision.CONFIRMED) lockedCorners += cornerIdx.lastIndex
         currentCorner = vertex
         cornerSamples += stillBuffer.map { it.copy(vertexId = vertex) }
-        log("esquina", null, x = s.track[idx].x, y = s.track[idx].y, note = "esquina $vertex, ${stillBuffer.size} lecturas quietas previas")
+        log("esquina", null, x = s.track[idx].x, y = s.track[idx].y,
+            note = "esquina $vertex${if (decision == GpsCornerTap.Decision.CONFIRMED) " (confirmada)" else ""}, ${stillBuffer.size} lecturas quietas previas")
         _state.update {
             it.copy(
                 cornersFixed = vertex, cornerPoints = it.cornerPoints + s.track[idx], atCorner = vertex,
                 stillReadings = stillBuffer.size, error = null,
             )
+        }
+    }
+
+    /** Quita la última esquina marcada (tocada por error), con sus lecturas quietas. */
+    fun undoCorner() {
+        if (_state.value.phase != GpsPhase.RECORDING || cornerIdx.isEmpty()) return
+        val vertex = cornerIdx.size
+        cornerIdx.removeAt(cornerIdx.lastIndex)
+        lockedCorners -= cornerIdx.size
+        cornerSamples.removeAll { it.vertexId == vertex }
+        if (currentCorner == vertex) currentCorner = null
+        warnedAt = null
+        log("esquina", null, note = "deshecha $vertex")
+        _state.update {
+            it.copy(cornersFixed = vertex - 1, cornerPoints = it.cornerPoints.dropLast(1), atCorner = null, error = null)
         }
     }
 
@@ -292,7 +326,9 @@ class GpsViewModel(
         stillBuffer.clear()
         gpsObs.clear()
         currentCorner = null
-        startWarnedAt = null
+        warnedAt = null
+        lockedCorners.clear()
+        flushSteps = null
         recordAccuracies.clear()
         val profile = Transport.of(_state.value.transport)
         maxAccuracyM = profile.maxAccuracyM
@@ -363,23 +399,44 @@ class GpsViewModel(
             val o = origin
             if (f != null && o != null) { f.settle(); publish(f, o) { it } }
         }
+        // Un paso suelto (mover el celular en la mano) no cuenta: solo los de una racha de caminata
+        val gate = com.metrik.app.sensors.WalkingGate()
+        fun applySteps(confirmed: List<Double>, retained: Boolean = false) {
+            val f = fusion ?: return // sin punto de partida todavía: se espera el primer GPS
+            val o = origin ?: return
+            if (confirmed.isEmpty()) return
+            if (!retained) {
+                lastStepNs = nanoClock(); onMoved()
+            } else {
+                // Pasos retenidos tras una pausa: las lecturas quietas de después ya son del lugar nuevo (la esquina
+                // que se toca o la partida al finalizar), no de la esquina anterior
+                val mark = (stillMarkAtPending ?: stillBuffer.size).coerceAtMost(stillBuffer.size)
+                val after = stillBuffer.drop(mark)
+                currentCorner?.let { c ->
+                    val moved = after.map { it.timestampS }.toSet()
+                    cornerSamples.removeAll { it.vertexId == c && it.timestampS in moved }
+                }
+                currentCorner = null
+                stillBuffer.clear(); stillBuffer += after
+                _state.update { it.copy(atCorner = null, stillReadings = after.size) }
+            }
+            stillMarkAtPending = null
+            confirmed.forEach { h ->
+                val now = wallClockS()
+                f.onStep(h, now); times += now
+                log("paso", null, headingDeg = Math.toDegrees(h), x = f.position.x, y = f.position.y)
+            }
+            publish(f, o) { it.copy(steps = it.steps + confirmed.size) }
+        }
+        flushSteps = { if (fusion != null && origin != null) applySteps(gate.flushPending(), retained = true) }
         job = viewModelScope.launch {
             launch {
-                // Un paso suelto (mover el celular en la mano) no cuenta: solo los de una racha de caminata
-                val gate = com.metrik.app.sensors.WalkingGate()
                 compass.collect { headingRad ->
-                    val f = fusion ?: return@collect // sin punto de partida todavía: se espera el primer GPS
-                    val o = origin ?: return@collect
+                    if (fusion == null || origin == null) return@collect
                     val confirmed = gate.onStep(nanoClock(), headingRad)
-                    if (confirmed.isEmpty()) return@collect
-                    lastStepNs = nanoClock()
-                    onMoved()
-                    confirmed.forEach { h ->
-                        val now = wallClockS()
-                        f.onStep(h, now); times += now
-                        log("paso", null, headingDeg = Math.toDegrees(h), x = f.position.x, y = f.position.y)
-                    }
-                    publish(f, o) { it.copy(steps = it.steps + confirmed.size) }
+                    // Primer paso de una racha nueva: lo que quede quieto después ya no es de la pausa anterior
+                    if (confirmed.isEmpty() && gate.pendingCount == 1) stillMarkAtPending = stillBuffer.size
+                    applySteps(confirmed)
                 }
             }
             location.samples.collect { s ->
@@ -430,6 +487,8 @@ class GpsViewModel(
 
     /** Termina el recorrido en la partida: cierra la poligonal, corrige el recorrido y calcula el área. */
     fun finish() {
+        // Los últimos 1–2 pasos hasta la partida (tras detenerse en la última esquina) siguen retenidos: cuentan
+        if (_state.value.phase == GpsPhase.RECORDING) flushSteps?.invoke()
         job?.cancel()
         // El plano final se calcula con el ajuste completo, no con el que se estaba mostrando de a poco
         settleSteps?.invoke()
@@ -476,7 +535,7 @@ class GpsViewModel(
         }
         val allAnchors = cornerIdx.indices.map { k -> anchor(cornerSamples.filter { it.vertexId == k + 1 }) }
         // Esquinas espurias (doble toque, a mitad de un lado recto, zigzag o ya en la partida) fuera del ajuste
-        val kept = GpsCornerCleanup.keep(s.track, cornerIdx, allAnchors)
+        val kept = GpsCornerCleanup.keep(s.track, cornerIdx, allAnchors, locked = lockedCorners.toSet())
         if (kept.size < cornerIdx.size) log("fin", null, note = "esquinas descartadas: ${(cornerIdx.indices - kept.toSet()).map { it + 1 }}")
         val corners = kept.map { cornerIdx[it] }
         val anchors = kept.map { allAnchors[it] }
@@ -720,6 +779,11 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Lejos de «Esquina» (que se toca con el pulgar) para no deshacer sin querer
+                        OutlinedButton(
+                            onClick = vm::undoCorner, enabled = s.cornersFixed > 0,
+                            modifier = Modifier.weight(0.8f).testTag("gps_undo_corner"),
+                        ) { Text("Deshacer") }
                         OutlinedButton(onClick = vm::fixCorner, modifier = Modifier.weight(1f).testTag("gps_fix_corner")) {
                             Text("Esquina ${s.cornersFixed + 1}")
                         }
