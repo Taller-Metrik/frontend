@@ -20,10 +20,15 @@ import kotlin.math.sqrt
  * No se corrige punto por punto: eso, con el retraso del GPS, redondeaba las esquinas y achicaba
  * el área (probado: 23 % de error contra 17 % solo con pasos).
  *
- * **Sin saltos en pantalla:** el giro y la escala del ajuste se encienden recién cuando las lecturas GPS se
- * abren lo suficiente, y entonces cambian de golpe (hasta 20° y 25 %): todo el trazo saltaba 5–6 m. Lo que se
- * dibuja ([position], [track]) se acerca al ajuste de a poco ([maxRotationStepRad], [maxScaleStep] por
- * actualización); el control de rebotes usa siempre el ajuste completo y [settle] lo aplica entero al terminar.
+ * **Sin saltos en pantalla:** antes el giro y la escala se encendían de golpe cuando las lecturas GPS se abrían lo
+ * suficiente (hasta 20° y 25 %: todo el trazo saltaba 5–6 m). Ahora se estiman desde la primera lectura partiendo de
+ * lo que ya se sabe (brújula ±15°, paso calibrado ±7 %), así que crecen de forma continua a medida que el recorrido
+ * se abre. Además lo que se dibuja ([position], [track]) se acerca al ajuste de a poco ([maxRotationStepRad],
+ * [maxScaleStep] por actualización); el control de rebotes usa siempre el ajuste completo y [settle] lo aplica
+ * entero al terminar.
+ *
+ * **Retraso del GPS:** cada lectura se compara con la posición de los pasos a la hora en que se tomó (interpolada),
+ * no con el último paso: a pie, el ~0,5–1 s de retraso son ~1 m.
  *
  * **Partida fija:** la partida es el centro de las lecturas quietas del inicio (el origen). El ajuste solo gira y
  * escala la figura de los pasos alrededor de ella, sin trasladarla: antes la traslación la corría metros y, al
@@ -47,6 +52,7 @@ class PdrGpsFusion(
     private data class Pair2(val pdr: Point, val gps: Point, val w: Double)
 
     private val raw = mutableListOf(Point(0.0, 0.0)) // figura de los pasos (sin ajustar)
+    private val stepTimes = mutableListOf<Double?>(null) // hora de cada punto de [raw] (la partida no tiene)
     private val pairs = mutableListOf(Pair2(Point(0.0, 0.0), Point(0.0, 0.0), startWeightReadings / (startAccuracyM * startAccuracyM)))
     // Ajuste completo (objetivo) y el que se dibuja, que lo sigue de a poco
     private var targetScale = 1.0
@@ -75,24 +81,46 @@ class PdrGpsFusion(
         updateTranslation()
     }
 
-    /** Un paso en la dirección [headingRad] (0 = norte, π/2 = este). */
-    fun onStep(headingRad: Double) {
+    /** Un paso en la dirección [headingRad] (0 = norte, π/2 = este), dado a la hora [atS] (segundos; null = sin hora). */
+    fun onStep(headingRad: Double, atS: Double? = null) {
         val last = raw.last()
         raw += Point(last.x + stepLengthM * sin(headingRad), last.y + stepLengthM * cos(headingRad))
+        stepTimes += atS
         approachTarget()
     }
 
-    /** Agrega una lectura GPS (en ENU) y reajusta. Devuelve false si se descartó por rebote. */
-    fun onGps(gps: Point, accuracyM: Double): Boolean {
-        val predicted = transform(raw.last(), targetRotation, targetScale)
+    /**
+     * Agrega una lectura GPS (en ENU) tomada a la hora [atS] y reajusta. Devuelve false si se descartó por rebote.
+     * La lectura llega ~0,5–1 s tarde (≈ 1 m a pie): se compara con donde estaban los pasos a la hora del fix,
+     * no con el último paso.
+     */
+    fun onGps(gps: Point, accuracyM: Double, atS: Double? = null): Boolean {
+        val pdr = pdrAt(atS)
+        val predicted = transform(pdr, targetRotation, targetScale)
         val tolerance = outlierSigmas * sqrt(accuracyM * accuracyM + 4.0) // + ~2 m de error propio de los pasos
         if (pairs.size >= 5 && hypot(gps.x - predicted.x, gps.y - predicted.y) > tolerance && ++outliers < acceptAfterOutliers) {
             return false
         }
         outliers = 0
-        pairs += Pair2(raw.last(), gps, 1.0 / (accuracyM * accuracyM))
+        pairs += Pair2(pdr, gps, 1.0 / (accuracyM * accuracyM))
         refit()
         return true
+    }
+
+    /** Posición de los pasos a la hora [atS], interpolada entre los dos pasos que la rodean; sin hora o fuera de rango: el último. */
+    private fun pdrAt(atS: Double?): Point {
+        if (atS == null) return raw.last()
+        val lastT = stepTimes.lastOrNull() ?: return raw.last()
+        if (atS >= lastT || lastT - atS > MAX_GPS_LAG_S) return raw.last()
+        for (i in stepTimes.lastIndex downTo 1) {
+            val t0 = stepTimes[i - 1] ?: return raw[i - 1] // antes del primer paso: seguía en la partida
+            val t1 = stepTimes[i] ?: return raw.last()
+            if (atS >= t0) {
+                val k = if (t1 > t0) (atS - t0) / (t1 - t0) else 1.0
+                return Point(raw[i - 1].x + (raw[i].x - raw[i - 1].x) * k, raw[i - 1].y + (raw[i].y - raw[i - 1].y) * k)
+            }
+        }
+        return raw.last()
     }
 
     private fun transform(p: Point): Point = transform(p, rotation, scale)
@@ -131,35 +159,25 @@ class PdrGpsFusion(
         return (mqx - sc * (c * mpx - s * mpy)) to (mqy - sc * (s * mpx + c * mpy))
     }
 
-    /** Semejanza de mínimos cuadrados ponderados (Umeyama 2D), con límites razonables. */
+    /** Semejanza de mínimos cuadrados ponderados (Umeyama 2D) anclada en la partida, regularizada y con límites razonables. */
     private fun refit() {
-        var w = 0.0; var mpx = 0.0; var mpy = 0.0; var mqx = 0.0; var mqy = 0.0 // centros (se guardan al final)
-        for (p in pairs) { w += p.w; mpx += p.w * p.pdr.x; mpy += p.w * p.pdr.y; mqx += p.w * p.gps.x; mqy += p.w * p.gps.y }
-        mpx /= w; mpy /= w; mqx /= w; mqy /= w
-        var a = 0.0; var b = 0.0; var varP = 0.0; var varQ = 0.0; var meanAcc2 = 0.0
+        // Giro y escala alrededor de la partida (fija en el origen): sumas sin centrar. Antes se encendían de golpe
+        // cuando las lecturas se abrían 2 × su error (salto de todo el trazo). Ahora se estiman siempre, con lo que se
+        // sabe de antemano (brújula ±15°, paso calibrado ±7 %): con pocas lecturas cerca de la partida casi no giran
+        // ni escalan, y a medida que el recorrido se abre el GPS manda, sin saltos.
+        var a0 = 0.0; var b0 = 0.0; var p0 = 0.0
         for (p in pairs) {
-            val px = p.pdr.x - mpx; val py = p.pdr.y - mpy
-            val qx = p.gps.x - mqx; val qy = p.gps.y - mqy
-            a += p.w * (px * qx + py * qy)
-            b += p.w * (px * qy - py * qx)
-            varP += p.w * (px * px + py * py)
-            varQ += p.w * (qx * qx + qy * qy)
-            meanAcc2 += p.w * (1.0 / p.w) // = Σ precisión² ponderada
+            a0 += p.w * (p.pdr.x * p.gps.x + p.pdr.y * p.gps.y)
+            b0 += p.w * (p.pdr.x * p.gps.y - p.pdr.y * p.gps.x)
+            p0 += p.w * (p.pdr.x * p.pdr.x + p.pdr.y * p.pdr.y)
         }
-        meanAcc2 /= w
-        // Solo se ajustan escala y giro cuando las lecturas GPS se abren bastante más que su error;
-        // si no (recorrido corto), solo se ajusta la ubicación.
-        val spreadEnough = varP > 0 && varQ / w > 4 * meanAcc2
-        if (spreadEnough) {
-            // Giro y escala alrededor de la partida (fija en el origen): sumas sin centrar
-            var a0 = 0.0; var b0 = 0.0; var p0 = 0.0
-            for (p in pairs) {
-                a0 += p.w * (p.pdr.x * p.gps.x + p.pdr.y * p.gps.y)
-                b0 += p.w * (p.pdr.x * p.gps.y - p.pdr.y * p.gps.x)
-                p0 += p.w * (p.pdr.x * p.pdr.x + p.pdr.y * p.pdr.y)
-            }
-            targetRotation = atan2(b0, a0).coerceIn(-maxRotationRad, maxRotationRad)
-            targetScale = if (p0 > 0) (hypot(a0, b0) / p0).coerceIn(1 - maxScaleError, 1 + maxScaleError) else 1.0
+        if (p0 > 0) {
+            // Información del ajuste (lecturas seguidas del GPS están correlacionadas: valen menos que independientes)
+            val info = p0 / GPS_CORRELATION_FACTOR
+            val kRot = info / (info + 1 / (PRIOR_ROTATION_SIGMA_RAD * PRIOR_ROTATION_SIGMA_RAD))
+            val kScale = info / (info + 1 / (PRIOR_SCALE_SIGMA * PRIOR_SCALE_SIGMA))
+            targetRotation = (kRot * atan2(b0, a0)).coerceIn(-maxRotationRad, maxRotationRad)
+            targetScale = (1 + kScale * (hypot(a0, b0) / p0 - 1)).coerceIn(1 - maxScaleError, 1 + maxScaleError)
         } else {
             targetRotation = 0.0
             targetScale = 1.0
@@ -167,5 +185,16 @@ class PdrGpsFusion(
         // Sin traslación: la partida queda en el origen
         this.mpx = 0.0; this.mpy = 0.0; this.mqx = 0.0; this.mqy = 0.0
         approachTarget()
+    }
+
+    private companion object {
+        /** Retraso máximo del GPS que se corrige interpolando los pasos (más que esto: lectura vieja, se usa el último). */
+        const val MAX_GPS_LAG_S = 3.0
+        /** Error típico de la brújula antes de corregirla con GPS. */
+        val PRIOR_ROTATION_SIGMA_RAD = Math.toRadians(15.0)
+        /** Error típico del largo de paso calibrado. */
+        const val PRIOR_SCALE_SIGMA = 0.07
+        /** Las lecturas GPS seguidas comparten error (decenas de segundos): cada una vale ~1/3 de una independiente. */
+        const val GPS_CORRELATION_FACTOR = 3.0
     }
 }

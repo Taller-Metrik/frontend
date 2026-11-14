@@ -22,6 +22,10 @@ import kotlin.math.sqrt
  * 3. **Cierre.** La partida es el origen y el recorrido termina en ella: el último tramo vuelve a (0, 0). El error
  *    de cierre (lo que la cadena de tramos no cierra) se reparte entre las esquinas por mínimos cuadrados
  *    ponderados (generaliza la regla de la brújula: cada tramo y cada ancla pesan según su σ).
+ * 4. **Figura sin cruces.** En un lugar más angosto que el error del GPS (un puente o una calle de 4 m, con rebotes de
+ *    3–8 m) las anclas y el GPS de cada tramo pueden pasar un lado sobre el otro. Si el ajuste cruza la figura, manda
+ *    la forma de los pasos con el cierre repartido; el área (fórmula de Gauss) vale para figuras cóncavas o convexas
+ *    siempre que no se crucen.
  *
  * El recorrido se dibuja llevando cada tramo, con una semejanza, a sus dos esquinas ajustadas.
  */
@@ -57,13 +61,35 @@ object GpsTraverse {
     private const val MAX_LEG_SCALE_ERROR = 0.25
     /** Error residual del tramo corregido con GPS: 1 % del largo (lo que el GPS no puede ver). */
     private const val GPS_LEG_RESIDUAL_PER_M = 0.01
+    /** Los tramos girados con GPS se usan si la cadena cierra igual o mejor que sin ellos (con este margen). */
+    private const val LEG_CLOSURE_TOLERANCE_M = 1.0
+    /** Cuánto se corre el GPS entre la partida y el final (minutos después) aunque sea el mismo lugar. */
+    private const val GPS_DRIFT_SIGMA_M = 2.0
+    /**
+     * Deriva del rumbo de la brújula: se desvía cada vez más con lo caminado, así que un tramo de pasos del final
+     * está más girado que uno del principio. σ a priori de esa deriva (rad por metro caminado; 1e-3 ≈ 6° cada 100 m).
+     */
+    const val HEADING_DRIFT_SIGMA_RAD_PER_M = 1e-3
+    /**
+     * La deriva se estima solo si el cierre es mayor que lo que explica el error al azar de los tramos (σ de la
+     * cadena): nada por debajo de la mitad de esa σ, del todo desde una σ. Sin deriva el ajuste queda como estaba.
+     */
+    private const val DRIFT_CLOSURE_MIN_SIGMAS = 0.5
+    private const val DRIFT_CLOSURE_FULL_SIGMAS = 1.0
 
     /**
      * Tramo entre dos nudos: su vector [delta] con σ y, si se encajó con GPS, el centro de esas lecturas ([mid]),
      * que cae en la fracción [midT] del tramo. Vector y centro salen independientes del ajuste (centro y giro/escala
      * no se correlacionan): así una esquina sin lecturas quietas también queda ubicada por el GPS de sus lados.
      */
-    private class Leg(val delta: Point, val sigmaM: Double, val mid: Anchor? = null, val midT: Double = 0.5)
+    private class Leg(
+        val delta: Point,
+        val sigmaM: Double,
+        val mid: Anchor? = null,
+        val midT: Double = 0.5,
+        /** Pasos + brújula (sin GPS que lo enderece): lo caminado hasta su mitad, para girarlo con la deriva. */
+        val walkedMidM: Double? = null,
+    )
 
     /**
      * @param track recorrido en metros con la partida en el primer punto (origen).
@@ -72,6 +98,8 @@ object GpsTraverse {
      * @param endAnchor promedio GPS de las lecturas quietas al terminar (en la partida), si hubo.
      * @param gps lecturas GPS en movimiento para corregir cada tramo (vacío si el recorrido ya es GPS).
      * @param sigma0M error base de un tramo; [driftPerM] error que crece con el largo del tramo.
+     * @param headingDriftSigma σ a priori de la deriva del rumbo (rad/m) con la que se explica el cierre; 0 = no
+     *   estimarla (el cierre se reparte solo según el σ de cada tramo, como la regla de la brújula).
      */
     fun adjust(
         track: List<Point>,
@@ -82,6 +110,7 @@ object GpsTraverse {
         gps: List<GpsObs> = emptyList(),
         sigma0M: Double = TRACK_SIGMA0_M,
         driftPerM: Double = TRACK_DRIFT_PER_M,
+        headingDriftSigma: Double = HEADING_DRIFT_SIGMA_RAD_PER_M,
     ): Result {
         require(cornerIdx.size == anchors.size) { "Cada esquina necesita su ancla (o null)" }
         if (cornerIdx.size < 2) throw GeometryException("Marca al menos 2 esquinas además de la partida (EX-05)")
@@ -89,7 +118,6 @@ object GpsTraverse {
         require(cornerIdx.zipWithNext().all { (a, b) -> a < b } && cornerIdx.first() > 0 && cornerIdx.last() < track.size) {
             "Las esquinas deben estar en orden dentro del recorrido"
         }
-        val n = cornerIdx.size
         val start = track.first()
         val cum = DoubleArray(track.size)
         for (i in 1 until track.size) cum[i] = cum[i - 1] + Geometry.euclidean(track[i - 1], track[i])
@@ -98,18 +126,107 @@ object GpsTraverse {
 
         // Tramos: partida → esquina 1 → … → esquina n → final (el final del recorrido)
         val knotIdx = listOf(0) + cornerIdx + listOf(track.lastIndex)
-        val legs = knotIdx.zipWithNext().map { (a, b) -> leg(track, a, b, cum, gps, sigma0M, driftPerM) }
+        val rawLegs = knotIdx.zipWithNext().map { (a, b) -> leg(track, a, b, cum, emptyList(), sigma0M, driftPerM) }
+        val gpsLegs = if (gps.isEmpty()) rawLegs else knotIdx.zipWithNext().map { (a, b) -> leg(track, a, b, cum, gps, sigma0M, driftPerM) }
+        // El cierre dice si girar cada tramo con su GPS ayudó: si la cadena corregida cierra peor que el recorrido tal
+        // cual, ese GPS estaba sesgado (calle o puente angosto entre paredes: rebotes de 3–8 m) y se deja de lado
+        val useGpsLegs = gps.isNotEmpty() && closure(gpsLegs) <= closure(rawLegs) + LEG_CLOSURE_TOLERANCE_M
+        val legs = if (useGpsLegs) gpsLegs else rawLegs
 
-        // Cierre: ¿se terminó en la partida? Lo dicen las lecturas quietas del final o, si no las hay, la cadena misma
-        val chainEnd = legs.fold(Point(0.0, 0.0)) { acc, l -> Point(acc.x + l.delta.x, acc.y + l.delta.y) }
+        // Cierre: ¿se terminó en la partida? La persona toca Finalizar en la partida: basta con que lo confirmen las
+        // lecturas quietas del final o la cadena de tramos (el GPS del final puede estar corrido unos metros del de la
+        // partida aunque sea el mismo lugar: es otro momento y el error del GPS cambia con los minutos)
+        val closureM = closure(legs)
         val chainSigma = sqrt(legs.sumOf { it.sigmaM * it.sigmaM })
-        val closureM = hypot(chainEnd.x - 0.0, chainEnd.y - 0.0)
-        val closed = if (endAnchor != null) {
-            hypot(endAnchor.point.x - start.x, endAnchor.point.y - start.y) <= maxOf(CLOSURE_SIGMAS * endAnchor.sigmaM, CLOSURE_FRACTION * total)
-        } else {
-            closureM <= maxOf(CLOSURE_SIGMAS * chainSigma, CLOSURE_FRACTION * total)
-        }
+        val chainClosed = closureM <= maxOf(CLOSURE_SIGMAS * chainSigma, CLOSURE_FRACTION * total)
+        val anchorClosed = endAnchor != null && hypot(endAnchor.point.x - start.x, endAnchor.point.y - start.y) <=
+            maxOf(CLOSURE_SIGMAS * hypot(hypot(endAnchor.sigmaM, startSigmaM), GPS_DRIFT_SIGMA_M), CLOSURE_FRACTION * total)
+        val closed = chainClosed || anchorClosed
 
+        // La figura real no se cruza (un terreno, una calle, un puente): si el ajuste la cruza, es que se le creyó de
+        // más al GPS en un lugar más angosto que su error (rebotes de 3–8 m en un puente de 4 m). Entonces manda la
+        // forma de los pasos con el cierre repartido (regla de la brújula); si aun así se cruzara, se prueba con el GPS
+        // cada vez menos pesado y, como último recurso, las esquinas tal como se caminaron.
+        // Antes de repartir el cierre, la parte que se explica con la deriva de la brújula (que crece con lo caminado)
+        // se corrige girando los tramos de pasos donde se desvió: el final más que el inicio. Así el cierre del video
+        // «puente parque» (6 m acumulados en la vuelta) no deforma el inicio ni el cuerpo de la medición.
+        val estimateDrift = closed && driftPerM > 0 && headingDriftSigma > 0
+        val fixedLegs = if (estimateDrift) dedrift(legs, headingDriftSigma) else legs
+        val fixedRaw = if (!estimateDrift) rawLegs else if (rawLegs === legs) fixedLegs else dedrift(rawLegs, headingDriftSigma)
+        val tries = listOf(
+            fixedLegs to 1.0, fixedRaw to Double.POSITIVE_INFINITY, fixedLegs to 4.0, fixedLegs to 16.0, fixedRaw to 16.0,
+        ) + (if (estimateDrift) listOf(
+            // Si con la deriva corregida la figura igual se cruza, se vuelve al reparto de antes (nunca peor que antes)
+            legs to 1.0, rawLegs to Double.POSITIVE_INFINITY, legs to 4.0, legs to 16.0, rawLegs to 16.0,
+        ) else emptyList())
+        var first: Result? = null
+        for ((l, trust) in tries) {
+            val r = solve(track, cornerIdx, anchors, start, startSigmaM, l, closed, closureM, trust)
+            if (first == null) first = r
+            if (isSimple(r.vertices)) return r
+        }
+        val walked = listOf(start) + cornerIdx.map { track[it] }
+        if (closed && isSimple(walked)) {
+            val f = first!!
+            return f.copy(vertices = walked, sigmasM = List(walked.size) { f.sigmasM.max() }, track = track)
+        }
+        return first!!
+    }
+
+    /** Distancia a la que termina la cadena de tramos de la partida (el error de cierre). */
+    private fun closure(legs: List<Leg>): Double {
+        val end = legs.fold(Point(0.0, 0.0)) { acc, l -> Point(acc.x + l.delta.x, acc.y + l.delta.y) }
+        return hypot(end.x, end.y)
+    }
+
+    /**
+     * Gira cada tramo de pasos ω·s (s = lo caminado hasta su mitad) con la deriva ω que mejor explica el cierre de la
+     * cadena, por mínimos cuadrados con ω ~ N(0, [sigmaRadPerM]²) y el error al azar de los tramos (σ de la cadena).
+     * Solo usa el cierre (no las anclas GPS): un desvío fijo de la brújula, que no abre el cierre, no se confunde con
+     * deriva. Si el cierre no supera lo que explica el azar, devuelve los tramos tal cual.
+     */
+    private fun dedrift(legs: List<Leg>, sigmaRadPerM: Double): List<Leg> {
+        val ex = legs.sumOf { it.delta.x }
+        val ey = legs.sumOf { it.delta.y }
+        val chainVar = legs.sumOf { it.sigmaM * it.sigmaM }
+        val ratio = hypot(ex, ey) / sqrt(chainVar)
+        val f = ((ratio - DRIFT_CLOSURE_MIN_SIGMAS) / (DRIFT_CLOSURE_FULL_SIGMAS - DRIFT_CLOSURE_MIN_SIGMAS)).coerceIn(0.0, 1.0)
+        if (f <= 0.0) return legs
+        // Girar Δ un ángulo chico a lo suma a·(−Δy, Δx): el cierre cambia ω·v, v = Σ s·(−Δy, Δx)
+        var vx = 0.0
+        var vy = 0.0
+        for (l in legs) l.walkedMidM?.let { s -> vx -= s * l.delta.y; vy += s * l.delta.x }
+        val sigma = sigmaRadPerM * f
+        val omega = -(vx * ex + vy * ey) / (vx * vx + vy * vy + chainVar / (sigma * sigma))
+        return legs.map { l ->
+            val s = l.walkedMidM ?: return@map l
+            val c = cos(omega * s)
+            val sn = sin(omega * s)
+            Leg(Point(c * l.delta.x - sn * l.delta.y, sn * l.delta.x + c * l.delta.y), l.sigmaM, l.mid, l.midT, s)
+        }
+    }
+
+    private fun isSimple(vertices: List<Point>) = runCatching { Geometry.isSimple(vertices) }.getOrDefault(false)
+
+    /**
+     * Mínimos cuadrados de la poligonal con los tramos [legs]. [gpsTrust] multiplica la varianza de las anclas y los
+     * centros GPS (1 = su σ tal cual, 4 = σ el doble; infinito = sin GPS: solo el recorrido y el cierre, como la
+     * regla de la brújula).
+     */
+    private fun solve(
+        track: List<Point>,
+        cornerIdx: List<Int>,
+        anchors: List<Anchor?>,
+        start: Point,
+        startSigmaM: Double,
+        legs: List<Leg>,
+        closed: Boolean,
+        closureM: Double,
+        gpsTrust: Double,
+    ): Result {
+        val n = cornerIdx.size
+        val gpsScale = sqrt(gpsTrust)
+        val useGps = gpsTrust.isFinite()
         // Mínimos cuadrados: incógnitas c_1..c_n (x e y por separado, misma matriz normal)
         val normal = Array(n) { DoubleArray(n) }
         val rx = DoubleArray(n)
@@ -130,11 +247,13 @@ object GpsTraverse {
             val from = k - 1
             val to = if (k == n) -1 else k
             observe(mapOf(to to 1.0, from to -1.0).filterKeys { it >= 0 }, l.delta, l.sigmaM)
-            l.mid?.let { m ->
-                observe(mapOf(from to 1 - l.midT, to to l.midT).filterKeys { it >= 0 }, Point(m.point.x - start.x, m.point.y - start.y), m.sigmaM)
+            if (useGps) l.mid?.let { m ->
+                observe(mapOf(from to 1 - l.midT, to to l.midT).filterKeys { it >= 0 }, Point(m.point.x - start.x, m.point.y - start.y), m.sigmaM * gpsScale)
             }
         }
-        anchors.forEachIndexed { k, a -> if (a != null) observe(mapOf(k to 1.0), Point(a.point.x - start.x, a.point.y - start.y), a.sigmaM) }
+        if (useGps) anchors.forEachIndexed { k, a ->
+            if (a != null) observe(mapOf(k to 1.0), Point(a.point.x - start.x, a.point.y - start.y), a.sigmaM * gpsScale)
+        }
         val inv = invert(normal) ?: throw GeometryException("No se pudo ajustar la poligonal (EX-05)")
         val cx = DoubleArray(n) { i -> (0 until n).sumOf { j -> inv[i][j] * rx[j] } }
         val cy = DoubleArray(n) { i -> (0 until n).sumOf { j -> inv[i][j] * ry[j] } }
@@ -208,7 +327,7 @@ object GpsTraverse {
                 return Leg(delta, maxOf(sigma, sigma0M), mid, t)
             }
         }
-        return Leg(raw, sigma0M + driftPerM * length)
+        return Leg(raw, sigma0M + driftPerM * length, walkedMidM = (cum[a] + cum[b]) / 2)
     }
 
     /** Semejanza que lleva el primer punto de [seg] a [pa] y el último a [pb]; un tramo sin largo solo se traslada. */

@@ -43,9 +43,13 @@ import com.metrik.app.domain.GpsSample
 import com.metrik.app.domain.LocalSurvey
 import com.metrik.app.domain.SurveyMode
 import com.metrik.app.feature.plan.saveToDownloads
+import com.metrik.app.gps.GpsCornerCleanup
+import com.metrik.app.gps.GpsCorridor
 import com.metrik.app.gps.GpsMath
 import com.metrik.app.gps.GpsPrecision
+import com.metrik.app.gps.GpsStartGate
 import com.metrik.app.gps.GpsTrackFilter
+import com.metrik.app.gps.robustStart
 import com.metrik.app.gps.GpsTraverse
 import com.metrik.app.gps.LocationSource
 import com.metrik.app.gps.PdrGpsFusion
@@ -103,6 +107,8 @@ data class GpsUiState(
     val closureConsistent: Boolean? = null,
     /** Precisión de la última lectura descartada por señal de interior al medir la precisión; null = señal buena. */
     val weakSignalM: Double? = null,
+    /** Arranque del GPS al medir la precisión (calentando, estabilizando, estable o sin estabilizar). */
+    val startStatus: GpsStartGate.Status? = null,
 )
 
 /**
@@ -128,6 +134,8 @@ class GpsViewModel(
     private val stepLengthM: Double = 0.70,
     private val nanoClock: () -> Long = System::nanoTime,
     private val wallClockS: () -> Double = { System.currentTimeMillis() / 1000.0 },
+    /** Decide desde qué lectura la posición ya es confiable al medir la precisión (calentamiento + convergencia). */
+    private val startGate: () -> GpsStartGate = { GpsStartGate() },
 ) : ViewModel() {
     private var lastStepNs: Long? = null
     /**
@@ -145,6 +153,8 @@ class GpsViewModel(
     private val cornerIdx = mutableListOf<Int>()
     /** Esquina en la que la persona sigue quieta desde el toque; null en cuanto vuelve a caminar. */
     private var currentCorner: Int? = null
+    /** Dónde se avisó «estás en la partida» al tocar «Esquina»: tocar de nuevo ahí confirma que es una esquina. */
+    private var startWarnedAt: Point? = null
     /** Lecturas quietas desde el último movimiento (la pausa natural en una esquina o en la partida). */
     private val stillBuffer = mutableListOf<GpsSample>()
     /** Lecturas GPS en movimiento usadas para corregir los pasos, con el punto del recorrido al que corresponden. */
@@ -157,6 +167,8 @@ class GpsViewModel(
     /** Precisión de todas las lecturas del recorrido (para saber si el terreno es más grande que el error). */
     private val recordAccuracies = mutableListOf<Double>()
     private val diag = StringBuilder()
+    /** true si el celular informa datos de satélites: entonces una lectura sin ellos es de Wi-Fi o red celular. */
+    private var sawGnss = false
 
     /** Lecturas con el celular quieto para estimar el margen de error inicial y fijar la partida. */
     fun calibrate() {
@@ -167,19 +179,33 @@ class GpsViewModel(
         _state.update { it.copy(phase = GpsPhase.CALIBRATING, calibrationSamples = 0, error = null) }
         // A pie: la brújula se enciende ya, para que se asiente mientras la persona está quieta
         if (Transport.of(_state.value.transport).key == "walk") compassFeed
+        // Las primeras lecturas tras encender el GPS salen corridas aunque informen buena precisión: no cuentan
+        // hasta que la posición se estabiliza (ver GpsStartGate)
+        val gate = startGate()
+        _state.update { it.copy(startStatus = gate.status) }
         job = viewModelScope.launch {
             location.samples.collect { s ->
+                if (s.satellites != null) sawGnss = true
+                val counted = gate.offer(s)
                 // Bajo techo o junto a una pared el error es de 10–20 m: esas lecturas no sirven para el punto de partida
-                if (s.accuracyM > CALIBRATION_MAX_ACCURACY_M) {
-                    log("gps", s, note = "calibracion descartada")
-                    _state.update { it.copy(weakSignalM = s.accuracyM, lastAccuracyM = s.accuracyM) }
-                    return@collect
+                val weak = s.accuracyM > CALIBRATION_MAX_ACCURACY_M
+                log("gps", s, note = when {
+                    weak -> "calibracion descartada"
+                    counted.isEmpty() -> "calibracion: ${gate.status.name.lowercase()}"
+                    else -> "calibracion"
+                })
+                calibration += counted
+                _state.update {
+                    it.copy(
+                        calibrationSamples = calibration.size, lastAccuracyM = s.accuracyM,
+                        weakSignalM = if (weak) s.accuracyM else null, startStatus = gate.status,
+                    )
                 }
-                log("gps", s, note = "calibracion")
-                calibration += s
-                _state.update { it.copy(calibrationSamples = calibration.size, lastAccuracyM = s.accuracyM, weakSignalM = null) }
                 if (calibration.size >= calibrationTarget) {
-                    val err = GpsMath.staticError(calibration)
+                    val err = GpsMath.staticError(calibration).let {
+                        // Sin estabilizarse en el tope: la partida es dudosa aunque las lecturas parezcan juntas
+                        if (gate.status == GpsStartGate.Status.UNSTABLE) it.copy(needsCalibration = true) else it
+                    }
                     _state.update { it.copy(phase = GpsPhase.READY, calibration = err) }
                     job?.cancel()
                 }
@@ -202,6 +228,29 @@ class GpsViewModel(
             return
         }
         if (currentCorner != null || (cornerIdx.isNotEmpty() && idx <= cornerIdx.last())) return
+        // Al final del recorrido: un toque junto a la última esquina o ya en la partida no es una esquina nueva
+        val here = s.track[idx]
+        val last = cornerIdx.lastOrNull()?.let(s.track::getOrNull)
+        val radius = GpsCornerTap.startRadiusM(s.calibration?.r95M)
+        when (GpsCornerTap.decide(here, s.track.first(), last, s.cornersFixed, radius, startWarnedAt)) {
+            GpsCornerTap.Decision.DOUBLE_TAP -> {
+                log("esquina", null, x = here.x, y = here.y, note = "ignorada: doble toque")
+                _state.update {
+                    it.copy(error = "Esquina ignorada: estás a menos de ${GpsCornerTap.DOUBLE_TAP_M.toInt()} m de la esquina " +
+                        "${s.cornersFixed}. Camina hasta la siguiente esquina.")
+                }
+                return
+            }
+            GpsCornerTap.Decision.AT_START -> {
+                startWarnedAt = here
+                log("esquina", null, x = here.x, y = here.y, note = "ignorada: en la partida")
+                _state.update {
+                    it.copy(error = "Estás en la partida: toca Finalizar. Si de verdad es una esquina, vuelve a tocar «Esquina» aquí.")
+                }
+                return
+            }
+            GpsCornerTap.Decision.MARK -> startWarnedAt = null
+        }
         val vertex = s.cornersFixed + 1
         cornerIdx += idx
         currentCorner = vertex
@@ -243,12 +292,14 @@ class GpsViewModel(
         stillBuffer.clear()
         gpsObs.clear()
         currentCorner = null
+        startWarnedAt = null
         recordAccuracies.clear()
         val profile = Transport.of(_state.value.transport)
         maxAccuracyM = profile.maxAccuracyM
         val filter = GpsTrackFilter(profile)
         // Punto de partida = centro de las lecturas de calibración (la persona estaba quieta en el inicio).
-        val start = GpsMath.startPoint(calibration)?.takeIf { it.accuracyM <= profile.maxAccuracyM }
+        // Centro robusto (mediana + descarte de rebotes) y precisión según su incertidumbre real, no la mejor lectura
+        val start = robustStart(calibration)?.sample?.takeIf { it.accuracyM <= profile.maxAccuracyM }
         start?.let(filter::seed)
         val initial = listOfNotNull(start)
         startTimestampS = (calibration.maxOfOrNull { it.timestampS } ?: Double.NEGATIVE_INFINITY)
@@ -324,7 +375,8 @@ class GpsViewModel(
                     lastStepNs = nanoClock()
                     onMoved()
                     confirmed.forEach { h ->
-                        f.onStep(h); times += wallClockS()
+                        val now = wallClockS()
+                        f.onStep(h, now); times += now
                         log("paso", null, headingDeg = Math.toDegrees(h), x = f.position.x, y = f.position.y)
                     }
                     publish(f, o) { it.copy(steps = it.steps + confirmed.size) }
@@ -332,6 +384,7 @@ class GpsViewModel(
             }
             location.samples.collect { s ->
                 if (isStale(s)) return@collect
+                if (s.satellites != null) sawGnss = true
                 recordAccuracies += s.accuracyM
                 val o = origin
                 val f = fusion
@@ -348,13 +401,17 @@ class GpsViewModel(
                 // Quieto (sin pasos recientes o Doppler ≈ 0): el GPS "pasea" y no debe mover la posición
                 val walking = lastStepNs?.let { nanoClock() - it < STEP_WINDOW_NS } == true
                 if (!walking || GpsMath.isStill(s)) { onStillSample(s); return@collect }
-                if (s.accuracyM > profile.maxAccuracyM) {
-                    log("gps", s, note = "descartada")
+                // Si el celular informa satélites, una lectura sin ellos vino de Wi-Fi o de la red celular: no corrige
+                // el trazo aunque diga buena precisión (causaba picos). Sin datos de satélites nunca: se usa igual.
+                val noGnss = s.satellites == null && sawGnss
+                if (s.accuracyM > profile.maxAccuracyM || noGnss || !GpsPrecision.acceptsSignal(s)) {
+                    log("gps", s, note = if (noGnss) "descartada (sin satelites)" else "descartada")
                     _state.update { it.copy(discarded = it.discarded + 1, lastAccuracyM = s.accuracyM) }
                     return@collect
                 }
                 val enu = GpsMath.toEnu(listOf(s), o.lat, o.lon).first()
-                val used = f.onGps(enu, s.accuracyM)
+                // Con la hora del fix: el GPS llega atrasado y se compara con donde estaban los pasos en ese momento
+                val used = f.onGps(enu, s.accuracyM, s.ageS?.let { wallClockS() - it })
                 if (used) gpsObs += GpsTraverse.GpsObs(f.track().lastIndex, enu, GpsPrecision.sigmaFromAccuracy(s.accuracyM))
                 log("gps", s, note = if (used) "correccion" else "rebote")
                 if (used) publish(f, o) { it.copy(gpsCorrections = it.gpsCorrections + 1, lastAccuracyM = s.accuracyM) }
@@ -417,17 +474,28 @@ class GpsViewModel(
             )
             return GpsTraverse.Anchor(fix.point, fix.sigmaM)
         }
-        val anchors = cornerIdx.indices.map { k -> anchor(cornerSamples.filter { it.vertexId == k + 1 }) }
+        val allAnchors = cornerIdx.indices.map { k -> anchor(cornerSamples.filter { it.vertexId == k + 1 }) }
+        // Esquinas espurias (doble toque, a mitad de un lado recto, zigzag o ya en la partida) fuera del ajuste
+        val kept = GpsCornerCleanup.keep(s.track, cornerIdx, allAnchors)
+        if (kept.size < cornerIdx.size) log("fin", null, note = "esquinas descartadas: ${(cornerIdx.indices - kept.toSet()).map { it + 1 }}")
+        val corners = kept.map { cornerIdx[it] }
+        val anchors = kept.map { allAnchors[it] }
         val startSigma = anchor(calibration)?.sigmaM ?: GpsPrecision.sigmaFromAccuracy(origin.accuracyM)
         // Solo GPS (sin pasos): el recorrido ya es GPS, cada tramo vale ±√2·σ de una lectura y no deriva con el largo
         val gpsOnly = !s.usingSteps
         val accs = s.samples.drop(1).map { it.accuracyM }.sorted()
         val legSigma0 = if (gpsOnly && accs.isNotEmpty()) Math.sqrt(2.0) * GpsPrecision.sigmaFromAccuracy(accs[accs.size / 2]) else GpsTraverse.TRACK_SIGMA0_M
-        val r = GpsTraverse.adjust(
-            s.track, cornerIdx, anchors, anchor(endSamples), startSigma,
+        val adjusted = GpsTraverse.adjust(
+            s.track, corners, anchors, anchor(endSamples), startSigma,
             gps = if (gpsOnly) emptyList() else gpsObs.toList(),
             sigma0M = legSigma0, driftPerM = if (gpsOnly) 0.0 else GpsTraverse.TRACK_DRIFT_PER_M,
         )
+        // Ida y vuelta por el mismo lugar angosto (un puente): la vuelta en zigzag se deja paralela a la ida. Solo si
+        // cerró y la figura regularizada es simple; si no, queda la poligonal tal cual
+        val corridor = if (adjusted.closed) GpsCorridor.regularize(adjusted.vertices, adjusted.sigmasM) else null
+        val r = if (corridor != null && corridor.vertices != adjusted.vertices && corridor.sigmasM != null &&
+            runCatching { Geometry.isSimple(corridor.vertices) }.getOrDefault(false)
+        ) adjusted.copy(vertices = corridor.vertices, sigmasM = corridor.sigmasM) else adjusted
         val k = if (r.closed) GpsPrecision.CLOSURE_COVERAGE_FACTOR else GpsPrecision.COVERAGE_FACTOR
         Triple(r, Geometry.analyze(r.vertices), GpsPrecision.uncertainty(r.vertices, r.sigmasM, k))
     }.onSuccess { (r, analysis, u) ->
@@ -590,7 +658,20 @@ fun GpsScreen(vm: GpsViewModel, onBack: () -> Unit, onSaved: (Long) -> Unit) {
                     }
                 }
                 GpsPhase.CALIBRATING -> {
-                    Text("Quédate quieto… ${s.calibrationSamples} lecturas")
+                    Text(
+                        when (s.startStatus) {
+                            GpsStartGate.Status.WARMING_UP -> "Quédate quieto… encendiendo el GPS"
+                            GpsStartGate.Status.STABILIZING -> "Quédate quieto… esperando que la posición se estabilice"
+                            else -> "Quédate quieto… ${s.calibrationSamples} lecturas"
+                        },
+                        modifier = Modifier.testTag("gps_start_status"),
+                    )
+                    if (s.startStatus == GpsStartGate.Status.UNSTABLE) {
+                        Text(
+                            "La posición no se estabilizó: la partida puede quedar corrida. Mejor a cielo abierto.",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     s.weakSignalM?.let { acc ->
                         Text(
                             "Señal débil (±${acc.toInt()} m): sal al aire libre, lejos de techos, paredes altas y árboles. " +

@@ -19,9 +19,12 @@ import com.metrik.app.core.geometry.Point
 import com.metrik.app.core.geometry.PolygonAnalysis
 import com.metrik.app.core.geometry.Smoothing
 import com.metrik.app.domain.GpsSample
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.shareIn
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -33,14 +36,22 @@ interface LocationSource {
     val samples: Flow<GpsSample>
 }
 
-class FusedLocationSource(context: Context) : LocationSource {
+/**
+ * El GPS se comparte en [scope] y sigue encendido [keepAliveMs] después de que se va el último recolector: así no se
+ * apaga entre la medición de precisión y el recorrido. Antes cada fase pedía el GPS de nuevo y el recorrido
+ * empezaba con otro arranque del receptor (las primeras lecturas corridas varios metros).
+ */
+class FusedLocationSource(context: Context, scope: CoroutineScope, keepAliveMs: Long = KEEP_ALIVE_MS) : LocationSource {
     private val client = LocationServices.getFusedLocationProviderClient(context)
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
+    override val samples: Flow<GpsSample> by lazy {
+        updates().shareIn(scope, SharingStarted.WhileSubscribed(stopTimeoutMillis = keepAliveMs))
+    }
+
     @SuppressLint("MissingPermission") // La pantalla solicita el permiso antes de recolectar
-    override val samples: Flow<GpsSample> = callbackFlow {
-        // Un callback GNSS por recolector: LocationManager identifica el registro por la instancia, así que
-        // uno compartido se daría de baja al terminar el recolector anterior (calibración → recorrido)
+    private fun updates(): Flow<GpsSample> = callbackFlow {
+        // Un callback GNSS por suscripción al GPS (con el flujo compartido hay una sola mientras siga encendido)
         val latest = AtomicReference<Pair<GnssQuality, Long>?>(null) // calidad y cuándo llegó (elapsedRealtime)
         val gnssCallback = object : GnssStatus.Callback() {
             override fun onSatelliteStatusChanged(status: GnssStatus) {
@@ -61,12 +72,14 @@ class FusedLocationSource(context: Context) : LocationSource {
                 val q = latest.get()?.takeIf { SystemClock.elapsedRealtime() - it.second < GNSS_STATUS_MAX_AGE_MS }?.first
                 for (l in result.locations) {
                     // Una lectura atrasada (llegó tarde o en lote) ya no corresponde a donde está la persona
-                    if (SystemClock.elapsedRealtimeNanos() - l.elapsedRealtimeNanos > MAX_FIX_AGE_NS) continue
+                    val ageNs = SystemClock.elapsedRealtimeNanos() - l.elapsedRealtimeNanos
+                    if (ageNs > MAX_FIX_AGE_NS) continue
                     trySend(
                         GpsSample(
                             l.latitude, l.longitude, l.accuracy.toDouble(), l.time / 1000.0,
                             satellites = q?.satellites, cn0DbHz = q?.cn0DbHz,
                             speedMps = if (l.hasSpeed()) l.speed.toDouble() else null,
+                            ageS = maxOf(0L, ageNs) / 1e9,
                         ),
                     )
                 }
@@ -85,6 +98,8 @@ class FusedLocationSource(context: Context) : LocationSource {
 
     private companion object {
         const val GNSS_STATUS_MAX_AGE_MS = 5_000L
+        /** El GPS sigue encendido 3 min sin recolectores (pantalla «Recorrer» tras medir la precisión). */
+        const val KEEP_ALIVE_MS = 180_000L
         /** Antigüedad máxima de una lectura al llegar (2 s). */
         const val MAX_FIX_AGE_NS = 2_000_000_000L
     }
