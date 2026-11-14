@@ -155,4 +155,23 @@ class GpsCornerCleanupTest {
         ev.obtenido = if (lost.isEmpty()) "todas las esquinas conservadas en ${figures.size * variants.size} recorridos" else "perdidas: $lost"
         assertTrue("perdidas: $lost", lost.isEmpty())
     }
+
+    @Test
+    @Evidencia(
+        id = "FU-115", nombre = "La limpieza final respeta las esquinas confirmadas (lados de menos de 2 m)",
+        requisito = "RF-18, RF-19",
+        objetivo = "En el puente del profesor (franja de 1,4 m de ancho) la última esquina queda a 1,4 m de la partida: la "
+            + "regla «en la partida al final» la borraba aunque la persona la hubiera confirmado tocando dos veces. Una "
+            + "esquina confirmada no se descarta por ninguna regla.",
+        entrada = "Franja 20 × 1,4 m caminada con esquinas en (20, 0), (20, 1,4) y (0, 1,4); limpieza sin y con las 3 confirmadas",
+        esperado = "Con las esquinas confirmadas se conservan las 3",
+    )
+    fun esquinasConfirmadasSeConservan() {
+        val (track, idx) = walk(listOf(wp(0.0, 0.0, mark = false), wp(20.0, 0.0), wp(20.0, 1.4), wp(0.0, 1.4), wp(0.0, 0.0, mark = false)))
+        val anchors = List(idx.size) { null }
+        val plain = GpsCornerCleanup.keep(track, idx, anchors)
+        val locked = GpsCornerCleanup.keep(track, idx, anchors, locked = idx.indices.toSet())
+        ev.obtenido = "sin confirmar: $plain; confirmadas: $locked"
+        assertEquals(listOf(0, 1, 2), locked)
+    }
 }
