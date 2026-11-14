@@ -52,7 +52,7 @@ class GpsQuietoTest {
         val gps = MutableSharedFlow<GpsSample>(extraBufferCapacity = 1_000)
         val brujula = MutableSharedFlow<Double>(extraBufferCapacity = 1_000)
         var now = 0L
-        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(),
+        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() },
             calibrationTarget = 3, compassSteps = brujula, stepLengthM = 0.70, nanoClock = { now })
         vm.calibrate()
         repeat(3) { gps.emit(at(0.0, 0.0, it.toDouble())) }
@@ -94,7 +94,7 @@ class GpsQuietoTest {
     )
     fun quietoSoloGps() = runBlocking {
         val gps = MutableSharedFlow<GpsSample>(extraBufferCapacity = 1_000)
-        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), calibrationTarget = 3)
+        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, calibrationTarget = 3)
         vm.calibrate()
         repeat(3) { gps.emit(at(0.0, 0.0, it.toDouble())) }
         vm.startRecording()

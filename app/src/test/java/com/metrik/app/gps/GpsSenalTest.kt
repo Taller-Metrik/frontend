@@ -24,7 +24,7 @@ class GpsSenalTest {
     private fun at(x: Double, y: Double, t: Double, acc: Double): GpsSample = GpsPrecisionTest.at(x, y, t, acc)
 
     private fun vm(gps: MutableSharedFlow<GpsSample>) =
-        GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), calibrationTarget = 3)
+        GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, calibrationTarget = 3)
 
     @Test
     @Evidencia(

@@ -38,7 +38,7 @@ class GpsCornersViewModelTest {
         var nowNs = 0L
         var t = 0.0
         val repo = FakeSurveyRepository()
-        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, repo,
+        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, repo, startGate = { com.metrik.app.gps.GpsStartGate.off() },
             calibrationTarget = 3, compassSteps = compass, stepLengthM = 0.70, nanoClock = { nowNs })
 
         suspend fun calibrateAndStart() {
@@ -179,7 +179,7 @@ class GpsCornersViewModelTest {
     fun soloGps() = runBlocking {
         val gps = MutableSharedFlow<GpsSample>(extraBufferCapacity = 10_000)
         val rnd = Random(9)
-        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), calibrationTarget = 3)
+        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, calibrationTarget = 3)
         vm.setTransport("bike")
         vm.calibrate()
         var t = 0.0

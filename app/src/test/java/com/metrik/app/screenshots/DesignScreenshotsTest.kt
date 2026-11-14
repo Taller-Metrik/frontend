@@ -205,7 +205,7 @@ class DesignScreenshotsTest {
                 }
             }
         }
-        val vm = GpsViewModel(1, loc, FakeSurveyRepository())
+        val vm = GpsViewModel(1, loc, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() })
         compose.setContent { MetrikTheme { GpsScreen(vm, {}, {}) } }
         vm.calibrate(); compose.waitForIdle()
         recording = true
@@ -329,7 +329,7 @@ class DesignScreenshotsTest {
     @Test
     fun p13_gps_transporte() {
         shadowOf(ApplicationProvider.getApplicationContext<Application>()).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
-        val vm = GpsViewModel(1, object : LocationSource { override val samples = flow<GpsSample> { } }, FakeSurveyRepository())
+        val vm = GpsViewModel(1, object : LocationSource { override val samples = flow<GpsSample> { } }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() })
         vm.setTransport("bike")
         compose.setContent { MetrikTheme { GpsScreen(vm, {}, {}) } }
         compose.waitForIdle()

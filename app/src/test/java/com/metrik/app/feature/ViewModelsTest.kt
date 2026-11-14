@@ -141,7 +141,7 @@ class ViewModelsTest {
             }
         }
         val repo = FakeSurveyRepository()
-        val vm = GpsViewModel(1, source, repo)
+        val vm = GpsViewModel(1, source, repo, startGate = { com.metrik.app.gps.GpsStartGate.off() })
         vm.calibrate()
         val cal = vm.state.value
         recording = true
@@ -178,7 +178,7 @@ class ViewModelsTest {
         }
         val brujula = flow { repeat(pasos) { emit(0.0) } } // 0 rad = norte
         // A) quieto
-        val vmA = GpsViewModel(1, source, FakeSurveyRepository(), compassSteps = brujula, stepLengthM = 0.70)
+        val vmA = GpsViewModel(1, source, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, compassSteps = brujula, stepLengthM = 0.70)
         vmA.calibrate(); calibrated = true; vmA.startRecording()
         val quieto = vmA.state.value
         // B) caminando 10 pasos al norte
@@ -187,7 +187,7 @@ class ViewModelsTest {
         val brujulaEnVivo = kotlinx.coroutines.flow.MutableSharedFlow<Double>(extraBufferCapacity = 100)
         val vmB = GpsViewModel(1, object : LocationSource {
             override val samples = flow { if (!calibrated) repeat(15) { emit(at(0.0, 0.0, it.toDouble())) } }
-        }, FakeSurveyRepository(), compassSteps = brujulaEnVivo, stepLengthM = 0.70)
+        }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, compassSteps = brujulaEnVivo, stepLengthM = 0.70)
         vmB.calibrate(); calibrated = true; vmB.startRecording()
         repeat(10) { brujulaEnVivo.emit(0.0) }
         val caminando = vmB.state.value

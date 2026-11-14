@@ -33,7 +33,7 @@ class GpsArranqueViewModelTest {
     fun brujulaEncendidaDesdeLaPrecision() = runBlocking {
         val gps = MutableSharedFlow<GpsSample>(extraBufferCapacity = 100)
         val compass = MutableSharedFlow<Double>(extraBufferCapacity = 100)
-        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(),
+        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() },
             calibrationTarget = 3, compassSteps = compass)
         vm.calibrate()
         val compassWhileCalibrating = withTimeout(5_000) { compass.subscriptionCount.first { it > 0 } }
@@ -57,7 +57,7 @@ class GpsArranqueViewModelTest {
     )
     fun lecturaViejaDescartada() = runBlocking {
         val gps = MutableSharedFlow<GpsSample>(extraBufferCapacity = 100)
-        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), calibrationTarget = 3)
+        val vm = GpsViewModel(1, object : LocationSource { override val samples = gps }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, calibrationTarget = 3)
         vm.setTransport("bike")
         vm.calibrate()
         repeat(3) { gps.emit(GpsPrecisionTest.at(0.0, 0.0, it.toDouble(), 2.5)) }
