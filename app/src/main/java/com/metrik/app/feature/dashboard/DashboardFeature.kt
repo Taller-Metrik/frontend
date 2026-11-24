@@ -145,6 +145,8 @@ fun algorithmsFor(survey: LocalSurvey, ml: MlAnalysisDto?): List<Pair<String, St
         } else {
             "Media móvil → Ramer-Douglas-Peucker (ε 10 cm) → ortogonalización → regla del tránsito → mínimos cuadrados"
         }
+    } else if (survey.mode == SurveyMode.IMPORTED) {
+        list += "Plano importado" to "Plano a escala calibrado con una distancia conocida (metros por píxel) y vértices marcados sobre él"
     } else {
         list += "Posición" to "GPS (Fused Location) → filtro por precisión ≤ 10 m → proyección local ENU"
         list += "Suavizado" to "Kalman + suavizador RTS → RDP adaptativo → ajuste de lados por mínimos cuadrados (PCA)"

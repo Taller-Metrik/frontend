@@ -44,10 +44,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** Referencias para terrenos (sin wincha). La imagen satelital se agregará cuando exista el mapa para marcar las esquinas. */
+/**
+ * Referencias para terrenos (sin wincha), las mismas del backend (`gps_reference.REFERENCE_TYPES`). Con la imagen
+ * satelital se escribe el área o el perímetro medidos en el mapa (p. ej. Google Earth); con el tramo base, el perímetro
+ * medido con wincha.
+ */
 val GPS_REFERENCES = listOf(
     "cancha" to "Cancha oficial",
     "catastro" to "Catastro / SUNARP",
+    "satelital" to "Imagen satelital",
+    "tramo_base" to "Medido con wincha",
     "rtk" to "GPS profesional",
 )
 

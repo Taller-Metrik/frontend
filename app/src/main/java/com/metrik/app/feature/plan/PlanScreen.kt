@@ -100,7 +100,7 @@ fun PlanScreen(
             }
             Spacer(Modifier.height(12.dp))
             Text("Resumen", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            StatRow("Modo", if (survey.mode == SurveyMode.INTERIOR) "Interior" else "Exterior (GPS)")
+            StatRow("Modo", survey.mode.shortLabel)
             StatRow("Área", a.areaM2.m2())
             StatRow("Perímetro", a.perimeterM.m())
             StatRow("Forma", if (a.isConvex) "Convexa" else "Cóncava (${a.concaveVertices.size} vértice(s))")
@@ -181,8 +181,8 @@ fun PlanScreen(
                 onClick = vm::exportReport, enabled = !s.busy,
                 modifier = Modifier.fillMaxWidth().testTag("plan_report"),
             ) { Icon(Icons.Filled.Description, null); Spacer(Modifier.width(4.dp)); Text("Informe técnico (PDF)") }
-            // Metrado de acabados (CU-07): solo para ambientes interiores
-            if (survey.mode == SurveyMode.INTERIOR) {
+            // Metrado de acabados (CU-07): ambientes interiores o planos importados (no terrenos)
+            if (survey.mode.isRoom) {
                 OutlinedButton(
                     onClick = { onFinishes(survey.id) }, enabled = !s.busy,
                     modifier = Modifier.fillMaxWidth().testTag("plan_finishes"),

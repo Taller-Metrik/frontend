@@ -125,7 +125,7 @@ class DefaultSurveyRepository(private val api: ApiClient, private val dao: Surve
         val survey = LocalSurvey(
             projectId = projectId,
             name = d.name,
-            mode = if (d.mode == "exterior") SurveyMode.EXTERIOR else SurveyMode.INTERIOR,
+            mode = SurveyMode.fromApi(d.mode),
             vertices = d.vertices.map { com.metrik.app.core.geometry.Point(it[0], it[1]) },
             areaM2 = d.areaM2,
             perimeterM = d.perimeterM,

@@ -18,7 +18,7 @@ data class OpeningDto(
 data class FinishesInDto(
     @SerialName("height_m") val heightM: Double,
     val openings: List<OpeningDto> = emptyList(),
-    /** Mano de obra por m² o m; los insumos toman el precio del catálogo. */
+    /** Precio de los insumos desde el catálogo (tienda o propio). El presupuesto es solo de materiales. */
     @SerialName("use_catalog") val useCatalog: Boolean = true,
     @SerialName("overhead_pct") val overheadPct: Double = 10.0,
     @SerialName("profit_pct") val profitPct: Double = 5.0,

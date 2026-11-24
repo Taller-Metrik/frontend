@@ -127,7 +127,7 @@ class HouseViewModel(
     init {
         viewModelScope.launch {
             surveys.observeLocal(projectId).collect { list ->
-                val interior = list.filter { it.mode == SurveyMode.INTERIOR && it.vertices.size >= 3 }.sortedBy { it.createdAt }
+                val interior = list.filter { it.mode.isRoom && it.vertices.size >= 3 }.sortedBy { it.createdAt }
                 // El contorno se reconoce por su nombre («Contorno de la casa»); si hay varios, el más reciente
                 val contour = interior.lastOrNull { it.name.trim().lowercase().startsWith(CONTOUR_PREFIX) }
                 _state.update { s ->

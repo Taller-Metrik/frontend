@@ -3,9 +3,23 @@ package com.metrik.app.domain
 import com.metrik.app.core.geometry.Point
 import kotlinx.serialization.Serializable
 
-enum class SurveyMode(val api: String, val label: String) {
-    INTERIOR("interior", "Interior (odómetro)"),
-    EXTERIOR("exterior", "Exterior (GPS)"),
+/**
+ * Tipo de medición, igual que en el backend. [IMPORTED] = medido sobre un plano a escala importado (CU-05): la app no
+ * lo crea, pero lo recibe al abrir una medición del servidor. [shortLabel] es el texto de las listas.
+ */
+enum class SurveyMode(val api: String, val label: String, val shortLabel: String) {
+    INTERIOR("interior", "Interior (odómetro)", "Interior"),
+    EXTERIOR("exterior", "Exterior (GPS)", "Exterior (GPS)"),
+    IMPORTED("imported", "Plano importado", "Plano importado"),
+    ;
+
+    /** Un ambiente con muros (interior o plano importado): admite acabados, wincha y plano de vivienda. */
+    val isRoom: Boolean get() = this != EXTERIOR
+
+    companion object {
+        /** Modo según el texto de la API; uno desconocido se trata como interior (como antes). */
+        fun fromApi(value: String): SurveyMode = entries.firstOrNull { it.api == value } ?: INTERIOR
+    }
 }
 
 @Serializable

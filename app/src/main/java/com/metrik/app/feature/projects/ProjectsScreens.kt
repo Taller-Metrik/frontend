@@ -204,7 +204,7 @@ fun ProjectDetailScreen(
                 }
             }
             // Plano de vivienda (CU-08): une los ambientes ya medidos por sus muros compartidos
-            if (local.count { it.mode == SurveyMode.INTERIOR } >= 2) item {
+            if (local.count { it.mode.isRoom } >= 2) item {
                 Card(Modifier.fillMaxWidth().clickable(onClick = onHousePlan).testTag("house_plan")) {
                     ListItem(
                         headlineContent = { Text("Plano de vivienda") },
@@ -223,7 +223,7 @@ fun ProjectDetailScreen(
                         headlineContent = { Text(sv.name) },
                         supportingContent = {
                             androidx.compose.foundation.layout.Column {
-                                Text("${if (sv.mode == SurveyMode.INTERIOR) "Interior" else "Exterior"} · ${sv.areaM2.m2()} · ${sv.perimeterM.m()} · 1:${sv.scaleDenominator}")
+                                Text("${sv.mode.shortLabel} ·${sv.areaM2.m2()} · ${sv.perimeterM.m()} · 1:${sv.scaleDenominator}")
                                 Text(
                                     if (sv.synced) "✔ Guardado en el servidor" else "↑ Solo en este celular — toca la nube para subirlo",
                                     style = MaterialTheme.typography.labelSmall,
