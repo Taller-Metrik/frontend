@@ -170,4 +170,28 @@ class FenceViewModelTest {
         ev.obtenido = labels.toString()
         assertEquals(listOf("Rollos de alambre de 200 m", "clave_desconocida"), labels)
     }
+
+    @Test
+    @Evidencia(
+        id = "FU-120", nombre = "Qué comprar y gastos de contratista en el cerco", requisito = "RF-24, RF-27 (CU-09)",
+        objetivo = "Verificar que la app envía la base de compra (automático por defecto) y que los gastos generales y la "
+            + "utilidad solo se cobran si se contrata la obra (comprar uno mismo el material no los lleva).",
+        entrada = "Calcular con los valores por defecto; luego «La medida» y «Contrato a alguien»",
+        esperado = "1.ª petición: purchase_basis=auto, GG 0 %, utilidad 0 %; 2.ª: nominal, 10 % y 5 %",
+    )
+    fun baseDeCompraYContratista() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val fences = FakeFences()
+        val vm = FenceViewModel(terreno(repo), repo, fences)
+        withTimeout(5_000) { vm.state.first { it.survey != null } }
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        vm.setPurchaseBasis("nominal"); vm.setContractor(true)
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        val (a, b) = fences.requests.map { it.second }
+        ev.obtenido = "1.ª=(${a.purchaseBasis}, ${a.overheadPct}, ${a.profitPct}), 2.ª=(${b.purchaseBasis}, ${b.overheadPct}, ${b.profitPct})"
+        assertEquals("auto", a.purchaseBasis); assertEquals(0.0, a.overheadPct, 0.0); assertEquals(0.0, a.profitPct, 0.0)
+        assertEquals("nominal", b.purchaseBasis); assertEquals(10.0, b.overheadPct, 0.0); assertEquals(5.0, b.profitPct, 0.0)
+    }
 }

@@ -174,4 +174,27 @@ class FinishesViewModelTest {
         ev.obtenido = "listados=$shown"
         assertEquals(setOf("cement_bag", "porcelain_box", "paint_gallon"), shown.toSet())
     }
+
+    @Test
+    @Evidencia(
+        id = "FU-121", nombre = "Gastos de contratista en acabados solo si se contrata", requisito = "RF-24 (CU-07)",
+        objetivo = "Verificar que el presupuesto de materiales no lleva gastos generales ni utilidad salvo que se contrate la obra.",
+        entrada = "Calcular con los valores por defecto; luego «Contrato a alguien»",
+        esperado = "1.ª petición: GG 0 %, utilidad 0 %; 2.ª: 10 % y 5 %",
+    )
+    fun gastosDeContratista() = runBlocking {
+        val repo = FakeSurveyRepository()
+        val fin = FakeFinishes()
+        val vm = FinishesViewModel(aula(repo), repo, fin)
+        withTimeout(5_000) { vm.state.first { it.survey != null } }
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        vm.setContractor(true)
+        vm.calculate()
+        withTimeout(5_000) { vm.state.first { it.result != null } }
+        val (a, b) = fin.requests.map { it.second }
+        ev.obtenido = "1.ª=(${a.overheadPct}, ${a.profitPct}), 2.ª=(${b.overheadPct}, ${b.profitPct})"
+        assertEquals(0.0, a.overheadPct, 0.0); assertEquals(0.0, a.profitPct, 0.0)
+        assertEquals(10.0, b.overheadPct, 0.0); assertEquals(5.0, b.profitPct, 0.0)
+    }
 }
