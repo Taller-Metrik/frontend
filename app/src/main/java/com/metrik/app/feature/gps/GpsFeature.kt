@@ -109,6 +109,10 @@ data class GpsUiState(
     val weakSignalM: Double? = null,
     /** Arranque del GPS al medir la precisión (calentando, estabilizando, estable o sin estabilizar). */
     val startStatus: GpsStartGate.Status? = null,
+    /** Trazo tal como se veía al tocar «Finalizar», antes de cualquier ajuste (se guarda para medir el error). */
+    val shownTrack: List<Point> = emptyList(),
+    /** Resultado de cada etapa del procesamiento final (metros respecto de la partida), en orden. */
+    val stages: Map<String, List<Point>> = emptyMap(),
 )
 
 /**
@@ -490,8 +494,10 @@ class GpsViewModel(
         // Los últimos 1–2 pasos hasta la partida (tras detenerse en la última esquina) siguen retenidos: cuentan
         if (_state.value.phase == GpsPhase.RECORDING) flushSteps?.invoke()
         job?.cancel()
+        val shown = _state.value.track
         // El plano final se calcula con el ajuste completo, no con el que se estaba mostrando de a poco
         settleSteps?.invoke()
+        _state.update { it.copy(shownTrack = shown, stages = mapOf("trazo_asentado" to it.track)) }
         val s = _state.value
         // Si ya se caminó después de la última esquina, las lecturas quietas del final son el cierre en la partida
         val endSamples = if (currentCorner == null) stillBuffer.toList() else emptyList()
@@ -507,7 +513,10 @@ class GpsViewModel(
             .onSuccess { r ->
                 log("fin", null, note = "sin esquinas: vertices=${r.vertices.size}, cierre=${"%.2f".format(Locale.US, r.closureM ?: 0.0)}")
                 _state.update {
-                    it.copy(phase = GpsPhase.FINISHED, polygon = r.vertices, analysis = r.analysis, closureM = r.closureM)
+                    it.copy(
+                        phase = GpsPhase.FINISHED, polygon = r.vertices, analysis = r.analysis, closureM = r.closureM,
+                        stages = it.stages + ("poligono_gps" to r.vertices),
+                    )
                 }
                 warnIfCrossed()
             }
@@ -556,6 +565,16 @@ class GpsViewModel(
             runCatching { Geometry.isSimple(corridor.vertices) }.getOrDefault(false)
         ) adjusted.copy(vertices = corridor.vertices, sigmasM = corridor.sigmasM) else adjusted
         val k = if (r.closed) GpsPrecision.CLOSURE_COVERAGE_FACTOR else GpsPrecision.COVERAGE_FACTOR
+        // Cada etapa por separado: si el plano sale mal, se ve si fue la limpieza, la poligonal o el corredor
+        val start = s.track.first()
+        val stages = buildMap {
+            put("esquinas_tocadas", listOf(start) + cornerIdx.map(s.track::get))
+            put("esquinas_limpias", listOf(start) + corners.map(s.track::get))
+            put("poligonal", adjusted.vertices)
+            if (r !== adjusted) put("corredor", r.vertices)
+            put("trazo_ajustado", r.track)
+        }
+        _state.update { it.copy(stages = it.stages + stages) }
         Triple(r, Geometry.analyze(r.vertices), GpsPrecision.uncertainty(r.vertices, r.sigmasM, k))
     }.onSuccess { (r, analysis, u) ->
         log("fin", null, note = "esquinas=${cornerIdx.size}, anclas=${r.sigmasM.map { "%.1f".format(Locale.US, it) }}, " +
@@ -607,6 +626,9 @@ class GpsViewModel(
                     projectId = projectId, name = name.trim(), mode = SurveyMode.EXTERIOR, gps = gps,
                     // Vértices ajustados en el celular, en metros respecto de la primera lectura enviada (el origen del servidor)
                     corners = if (s.uncertainty != null) cornersFromFirstReading(analysis.vertices, s.samples.first(), gps.first()) else null,
+                    // Trazo como se vio y cada etapa, en el mismo marco que `corners`
+                    points = cornersFromFirstReading(s.shownTrack, s.samples.first(), gps.first()),
+                    stages = s.stages.mapValues { (_, v) -> cornersFromFirstReading(v, s.samples.first(), gps.first()) }.ifEmpty { null },
                     capture = com.metrik.app.domain.CaptureInfo("gps", 0.0, 0.0, s.transport),
                     vertices = analysis.vertices, areaM2 = analysis.areaM2, perimeterM = analysis.perimeterM,
                     scaleDenominator = maxOf(500, Scale.suggestFor(analysis.vertices)),
@@ -616,7 +638,7 @@ class GpsViewModel(
         }
     }
 
-    /** Lleva los vértices (metros respecto de la partida [origin]) a metros respecto de la lectura [first]. */
+    /** Lleva puntos (metros respecto de la partida [origin]) a metros respecto de la lectura [first]. */
     private fun cornersFromFirstReading(vertices: List<Point>, origin: GpsSample, first: GpsSample): List<Point> {
         val ll = vertices.map { GpsMath.fromEnu(it, origin.lat, origin.lon, origin.accuracyM, origin.timestampS) }
         return GpsMath.toEnu(ll, first.lat, first.lon)

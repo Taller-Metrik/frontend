@@ -50,6 +50,8 @@ data class SurveyCreateDto(
     @SerialName("scale_denominator") val scaleDenominator: Int? = null,
     val capture: CaptureDto? = null,
     val transport: String? = null,
+    /** Etapas del procesamiento en el celular (solo diagnóstico; el servidor no las usa para calcular). */
+    val stages: Map<String, List<List<Double>>>? = null,
 )
 
 @Serializable

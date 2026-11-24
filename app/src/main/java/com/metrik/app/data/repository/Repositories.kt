@@ -155,10 +155,12 @@ fun LocalSurvey.toCreateDto(): SurveyCreateDto = SurveyCreateDto(
     name = name,
     mode = mode.api,
     deviceModel = listOfNotNull(Build.MANUFACTURER, Build.MODEL).joinToString(" ").trim().ifBlank { null },
-    points = if (mode == SurveyMode.INTERIOR) points.map { listOf(it.x, it.y) } else emptyList(),
+    // Interior: trazo del odómetro que procesa el servidor. Exterior: trazo tal como se vio (solo se guarda)
+    points = points.map { listOf(it.x, it.y) },
     corners = corners?.map { listOf(it.x, it.y) },
     gpsPoints = gps?.map { it.toDto() },
     scaleDenominator = scaleDenominator,
     capture = if (mode == SurveyMode.INTERIOR) capture?.let { CaptureDto(it.odometry, it.trackingLossS, it.durationS) } else null,
     transport = if (mode == SurveyMode.EXTERIOR) capture?.transport ?: "walk" else null,
+    stages = stages?.mapValues { (_, v) -> v.map { listOf(it.x, it.y) } },
 )

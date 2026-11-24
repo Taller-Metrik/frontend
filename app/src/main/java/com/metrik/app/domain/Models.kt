@@ -46,6 +46,8 @@ data class LocalSurvey(
     val points: List<Point> = emptyList(),
     val corners: List<Point>? = null,
     val gps: List<GpsSample>? = null,
+    /** Etapas del procesamiento en el celular (nombre → puntos), para ver en cuál nace el error. Solo exterior. */
+    val stages: Map<String, List<Point>>? = null,
     val capture: CaptureInfo? = null,
     val vertices: List<Point>,
     val areaM2: Double,
