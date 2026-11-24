@@ -131,6 +131,44 @@ class GpsCornersViewModelTest {
 
     @Test
     @Evidencia(
+        id = "FU-116", nombre = "Se guarda el trazo de pantalla y cada etapa antes del suavizado", requisito = "RF-08 / RF-18",
+        objetivo = "Verificar que, además del plano final, se guarda el trazo tal como se vio al caminar (antes de limpiar "
+            + "esquinas, ajustar la poligonal y regularizar el corredor) y el resultado de cada etapa, para medir en cuál nace el error.",
+        entrada = "Rectángulo 100×60 m a pie con 3 esquinas tocadas; finalizar y guardar",
+        esperado = "points = trazo mostrado al finalizar (mismo largo, en metros respecto de la primera lectura enviada); etapas "
+            + "trazo_asentado, esquinas_tocadas (3 + partida), esquinas_limpias, poligonal (= plano final) y trazo_ajustado",
+    )
+    fun guardaTrazoYEtapas() = runBlocking {
+        val sim = Sim(seed = 11)
+        sim.calibrateAndStart()
+        for (side in 0 until 4) {
+            sim.walk(truth[side], truth[(side + 1) % 4])
+            sim.nowNs += 4_000_000_000L
+            if (side < 3) sim.vm.fixCorner()
+            sim.still(truth[(side + 1) % 4], 6)
+        }
+        val shown = sim.vm.state.value.track
+        sim.vm.finish()
+        val done = sim.vm.state.value
+        sim.vm.save("Parque")
+        withTimeout(5_000) { sim.vm.state.first { it.savedLocalId != null } }
+        val saved = sim.repo.saved.value.values.single()
+        val stages = saved.stages.orEmpty()
+        ev.obtenido = "trazo mostrado=${shown.size}, guardado=${saved.points.size}, etapas=${stages.mapValues { it.value.size }}"
+        // Mismo marco que `corners`: metros respecto de la primera lectura enviada
+        val g0 = saved.gps!!.first()
+        val o = done.samples.first()
+        fun back(p: Point) = GpsMath.toEnu(listOf(GpsMath.fromEnu(p, g0.lat, g0.lon, 1.0, 0.0)), o.lat, o.lon).first()
+        assertEquals(shown.size, saved.points.size)
+        shown.zip(saved.points).forEach { (a, b) -> assertTrue(Geometry.euclidean(a, back(b)) < 0.01) }
+        assertEquals(setOf("trazo_asentado", "esquinas_tocadas", "esquinas_limpias", "poligonal", "trazo_ajustado"), stages.keys)
+        assertEquals(4, stages.getValue("esquinas_tocadas").size)
+        stages.getValue("poligonal").map(::back).zip(done.polygon).forEach { (a, b) -> assertTrue(Geometry.euclidean(a, b) < 0.01) }
+        assertEquals(done.track.size, stages.getValue("trazo_ajustado").size)
+    }
+
+    @Test
+    @Evidencia(
         id = "FU-49", nombre = "Un toque doble en la misma esquina no la duplica", requisito = "RF-18",
         objetivo = "Verificar que tocar «Esquina» dos veces sin haber caminado solo cuenta una esquina.",
         entrada = "Caminar un lado, tocar «Esquina» dos veces seguidas",
