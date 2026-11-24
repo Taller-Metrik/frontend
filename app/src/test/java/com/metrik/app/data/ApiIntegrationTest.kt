@@ -263,6 +263,24 @@ class ApiIntegrationTest {
 
     @Test
     @Evidencia(
+        id = "FI-15", nombre = "Abrir un plano importado del servidor", requisito = "RF-11 (CU-05), RF-17",
+        objetivo = "Verificar que un recorrido «imported» del servidor se guarda en el celular como plano importado, no como interior.",
+        entrada = "GET /surveys/21 con mode = imported",
+        esperado = "La copia local tiene modo imported y sus 4 vértices",
+    )
+    fun descargaPlanoImportado() = runBlocking {
+        val detalle = """{"id":21,"project_id":2,"name":"Plano escaneado","mode":"imported","area_m2":12.0,"perimeter_m":14.0,
+            "closed":true,"scale_denominator":50,"vertices":[[0,0],[4,0],[4,3],[0,3]],"wall_lengths_m":[4,3,4,3]}"""
+        server.enqueue(json(200, detalle))
+        val repo = DefaultSurveyRepository(api, InMemorySurveyDao())
+        val s = repo.getLocal(repo.downloadRemote(2, 21))!!
+        ev.obtenido = "modo=${s.mode.api}, vértices=${s.vertices.size}"
+        assertEquals("imported", s.mode.api)
+        assertEquals(4, s.vertices.size)
+    }
+
+    @Test
+    @Evidencia(
         id = "FI-13", nombre = "Plano de vivienda por la API", requisito = "RF-25 (CU-08)",
         objetivo = "Verificar el JSON del plano de vivienda y la lectura de los ambientes ubicados y las advertencias.",
         entrada = "POST /projects/7/floor-plan con 2 ambientes y una unión; respuesta simulada",
