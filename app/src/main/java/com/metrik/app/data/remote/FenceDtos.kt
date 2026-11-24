@@ -21,6 +21,8 @@ data class FenceInDto(
     val prices: Map<String, Double>? = null,
     @SerialName("overhead_pct") val overheadPct: Double = 10.0,
     @SerialName("profit_pct") val profitPct: Double = 5.0,
+    /** Qué comprar: auto (máximo del rango salvo que el margen del GPS sea muy grande), max o nominal (la medida). */
+    @SerialName("purchase_basis") val purchaseBasis: String = "auto",
 )
 
 @Serializable
@@ -31,7 +33,7 @@ data class TakeoffItemDto(
     val quantity: Double,
     val min: Double,
     val max: Double,
-    /** Lo que conviene comprar: el máximo del rango, redondeado hacia arriba. */
+    /** Lo que conviene comprar, redondeado hacia arriba: el máximo del rango o la medida (ver `purchase_basis`). */
     val purchase: Double,
     /** false = desglose informativo: no se le pone precio. */
     val priceable: Boolean = true,
@@ -78,4 +80,6 @@ data class FenceOutDto(
     val assumptions: List<String> = emptyList(),
     val notes: List<String> = emptyList(),
     val budget: BudgetDto? = null,
+    /** Base que usó el servidor para «comprar»: max o nominal. */
+    @SerialName("purchase_basis") val purchaseBasis: String = "max",
 )

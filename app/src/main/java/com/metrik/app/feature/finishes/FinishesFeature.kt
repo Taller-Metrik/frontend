@@ -41,6 +41,9 @@ import com.metrik.app.data.remote.userMessage
 import com.metrik.app.data.repository.FinishesRepository
 import com.metrik.app.data.repository.SurveyRepository
 import com.metrik.app.domain.LocalSurvey
+import com.metrik.app.feature.fence.CONTRACTOR_OVERHEAD_PCT
+import com.metrik.app.feature.fence.CONTRACTOR_PROFIT_PCT
+import com.metrik.app.ui.components.ContractorSwitch
 import com.metrik.app.ui.components.ErrorBanner
 import com.metrik.app.ui.components.MetrikTopBar
 import com.metrik.app.ui.components.StatRow
@@ -58,6 +61,8 @@ data class FinishesUiState(
     val height: String = "2.50",
     val openings: List<OpeningInput> = emptyList(),
     val prices: List<PriceDto> = emptyList(),
+    /** true = se contrata la obra: el presupuesto suma gastos generales y utilidad. */
+    val contractor: Boolean = false,
     val result: FinishesOutDto? = null,
     val busy: Boolean = false,
     val error: String? = null,
@@ -91,6 +96,7 @@ class FinishesViewModel(
     private fun edit(change: (FinishesUiState) -> FinishesUiState) = _state.update { change(it).copy(result = null) }
 
     fun setHeight(v: String) = edit { it.copy(height = v) }
+    fun setContractor(on: Boolean) = edit { it.copy(contractor = on) }
     fun addOpening(kind: String) = edit {
         val new = if (kind == "door") OpeningInput() else OpeningInput(kind = "window", width = "1.20", height = "1.00")
         it.copy(openings = it.openings + new)
@@ -141,7 +147,11 @@ class FinishesViewModel(
             val h = number(o.height)?.takeIf { it > 0 } ?: error("El alto del vano ${i + 1} debe ser un número mayor que 0")
             OpeningDto(o.wall, o.kind, w, h)
         }
-        return FinishesInDto(heightM = height, openings = openings)
+        return FinishesInDto(
+            heightM = height, openings = openings,
+            overheadPct = if (s.contractor) CONTRACTOR_OVERHEAD_PCT else 0.0,
+            profitPct = if (s.contractor) CONTRACTOR_PROFIT_PCT else 0.0,
+        )
     }
 
     private fun busy(block: suspend () -> Unit) {
@@ -187,6 +197,7 @@ fun FinishesScreen(vm: FinishesViewModel, onBack: () -> Unit) {
                 OutlinedButton(onClick = { vm.addOpening("window") }, enabled = s.walls >= 3) { Text("Agregar ventana") }
             }
 
+            ContractorSwitch(s.contractor, vm::setContractor)
             Button(
                 onClick = vm::calculate, enabled = !s.busy && s.survey != null,
                 modifier = Modifier.fillMaxWidth().testTag("finishes_calculate"),
@@ -233,9 +244,9 @@ private fun FinishesResult(r: FinishesOutDto) {
         Text("Presupuesto", style = MaterialTheme.typography.titleSmall)
         b.lines.forEach { StatRow("${it.description} (${it.quantity.qty(it.unit)} × ${it.unitPrice.soles()})", it.subtotal.soles()) }
         StatRow("Costo directo", b.directCost.soles())
-        StatRow("Gastos generales (${b.overheadPct.toInt()} %)", b.overhead.soles())
-        StatRow("Utilidad (${b.profitPct.toInt()} %)", b.profit.soles())
-        StatRow("Subtotal", b.subtotal.soles())
+        if (b.overheadPct > 0) StatRow("Gastos generales (${b.overheadPct.toInt()} %)", b.overhead.soles())
+        if (b.profitPct > 0) StatRow("Utilidad (${b.profitPct.toInt()} %)", b.profit.soles())
+        if (b.overheadPct > 0 || b.profitPct > 0) StatRow("Subtotal", b.subtotal.soles())
         StatRow("IGV (${b.igvPct.toInt()} %)", b.igv.soles())
         StatRow("Total", b.total.soles(), Modifier.testTag("finishes_total"))
         if (b.missingPrices.isNotEmpty()) {

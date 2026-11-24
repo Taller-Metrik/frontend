@@ -39,6 +39,7 @@ import com.metrik.app.data.remote.userMessage
 import com.metrik.app.data.repository.FenceRepository
 import com.metrik.app.data.repository.SurveyRepository
 import com.metrik.app.domain.LocalSurvey
+import com.metrik.app.ui.components.ContractorSwitch
 import com.metrik.app.ui.components.ErrorBanner
 import com.metrik.app.ui.components.MetrikTopBar
 import com.metrik.app.ui.components.StatRow
@@ -61,6 +62,10 @@ data class FenceUiState(
     val columnSpacing: String = "3",
     /** Precio escrito por el usuario para cada partida presupuestable. */
     val prices: Map<String, String> = emptyMap(),
+    /** Qué comprar: auto (el servidor decide según el margen del GPS), nominal (la medida) o max (máximo del rango). */
+    val purchaseBasis: String = "auto",
+    /** true = se contrata la obra: el presupuesto suma gastos generales y utilidad. */
+    val contractor: Boolean = false,
     val result: FenceOutDto? = null,
     val busy: Boolean = false,
     val error: String? = null,
@@ -97,6 +102,8 @@ class FenceViewModel(
     fun updateGate(i: Int, side: Int, width: String) =
         edit { it.copy(gates = it.gates.mapIndexed { k, g -> if (k == i) GateInput(side, width) else g }) }
     fun setPrice(key: String, text: String) = _state.update { it.copy(prices = it.prices + (key to text)) }
+    fun setPurchaseBasis(basis: String) = edit { it.copy(purchaseBasis = basis) }
+    fun setContractor(on: Boolean) = edit { it.copy(contractor = on) }
 
     /** Metrado sin presupuesto. */
     fun calculate() = run(withPrices = false)
@@ -137,9 +144,12 @@ class FenceViewModel(
         } else {
             null
         }
+        val overhead = if (s.contractor) CONTRACTOR_OVERHEAD_PCT else 0.0
+        val profit = if (s.contractor) CONTRACTOR_PROFIT_PCT else 0.0
         return if (s.kind == "wire") {
             FenceInDto(
                 kind = "wire", gates = gates, prices = prices,
+                overheadPct = overhead, profitPct = profit, purchaseBasis = s.purchaseBasis,
                 strands = s.strands.trim().toIntOrNull()?.takeIf { it in 1..10 } ?: error("Los hilos deben ser de 1 a 10"),
                 postSpacingM = number(s.postSpacing)?.takeIf { it in 1.5..5.0 }
                     ?: error("La separación de postes debe estar entre 1,5 y 5 m"),
@@ -147,6 +157,7 @@ class FenceViewModel(
         } else {
             FenceInDto(
                 kind = "brick", gates = gates, prices = prices,
+                overheadPct = overhead, profitPct = profit, purchaseBasis = s.purchaseBasis,
                 wallHeightM = number(s.wallHeight)?.takeIf { it in 1.0..4.0 } ?: error("La altura del muro debe estar entre 1 y 4 m"),
                 columnSpacingM = number(s.columnSpacing)?.takeIf { it in 2.0..4.5 }
                     ?: error("La separación de columnas debe estar entre 2 y 4,5 m"),
@@ -159,6 +170,17 @@ class FenceViewModel(
         fun number(text: String): Double? = text.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() }
     }
 }
+
+/** Gastos generales y utilidad cuando se contrata la obra (los mismos del backend por defecto). */
+const val CONTRACTOR_OVERHEAD_PCT = 10.0
+const val CONTRACTOR_PROFIT_PCT = 5.0
+
+/** Opciones de «¿Qué comprar?» (clave del backend → texto). */
+val PURCHASE_BASES = listOf(
+    "auto" to "Automático",
+    "nominal" to "La medida",
+    "max" to "Máximo del rango",
+)
 
 private fun Double.qty(unit: String): String =
     if (unit == "und" || unit == "rollo") String.format(Locale.US, "%.0f %s", this, unit)
@@ -205,6 +227,22 @@ fun FenceScreen(vm: FenceViewModel, onBack: () -> Unit) {
                 Text("Agregar portón")
             }
             Text("El lado 1 va del vértice 1 al 2 del plano, el lado 2 del 2 al 3, y así.", style = MaterialTheme.typography.bodySmall)
+
+            Text("¿Qué comprar?", style = MaterialTheme.typography.titleSmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PURCHASE_BASES.forEach { (key, label) ->
+                    FilterChip(s.purchaseBasis == key, { vm.setPurchaseBasis(key) }, { Text(label) }, Modifier.testTag("fence_basis_$key"))
+                }
+            }
+            Text(
+                when (s.purchaseBasis) {
+                    "nominal" -> "Lo que dio la medición, redondeado hacia arriba."
+                    "max" -> "Lo más que podría medir el terreno según el margen del GPS: no te falta, pero puede sobrar."
+                    else -> "El máximo del rango, salvo que el margen del GPS sea muy grande (más del 20 %): entonces la medida."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            ContractorSwitch(s.contractor, vm::setContractor)
 
             Button(
                 onClick = vm::calculate, enabled = !s.busy && s.survey != null,
@@ -253,9 +291,9 @@ private fun FenceResult(r: FenceOutDto, s: FenceUiState, vm: FenceViewModel) {
         Text("Presupuesto", style = MaterialTheme.typography.titleSmall)
         b.lines.forEach { StatRow("${it.description} (${it.quantity.qty(it.unit)} × ${it.unitPrice.soles()})", it.subtotal.soles()) }
         StatRow("Costo directo", b.directCost.soles())
-        StatRow("Gastos generales (${b.overheadPct.toInt()} %)", b.overhead.soles())
-        StatRow("Utilidad (${b.profitPct.toInt()} %)", b.profit.soles())
-        StatRow("Subtotal", b.subtotal.soles())
+        if (b.overheadPct > 0) StatRow("Gastos generales (${b.overheadPct.toInt()} %)", b.overhead.soles())
+        if (b.profitPct > 0) StatRow("Utilidad (${b.profitPct.toInt()} %)", b.profit.soles())
+        if (b.overheadPct > 0 || b.profitPct > 0) StatRow("Subtotal", b.subtotal.soles())
         StatRow("IGV (${b.igvPct.toInt()} %)", b.igv.soles())
         StatRow("Total", b.total.soles(), Modifier.testTag("fence_total"))
         if (b.missingPrices.isNotEmpty()) {

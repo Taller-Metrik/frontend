@@ -1,6 +1,7 @@
 package com.metrik.app.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -89,6 +90,15 @@ fun LoadingButton(
 
 @Composable
 fun StatRow(label: String, value: String, modifier: Modifier = Modifier) {
+    if (statRowStacked(value)) {
+        // Valor largo (p. ej. «27.42 m · 274.2 mm en papel · ángulo 120°»): va debajo de la etiqueta. En una sola fila
+        // ocupaba todo el ancho y la etiqueta quedaba partida letra a letra («Mur / o 1»)
+        Column(modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        }
+        return
+    }
     // El texto largo baja de línea y el valor queda siempre visible a la derecha (pantallas angostas)
     Row(modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(
@@ -96,6 +106,30 @@ fun StatRow(label: String, value: String, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+/** Largo desde el que el valor de una [StatRow] va debajo de la etiqueta (un monto o una medida suelta caben al lado). */
+const val STAT_ROW_INLINE_MAX_CHARS = 22
+
+/** true si el valor no cabe al lado de la etiqueta en un celular angosto. */
+fun statRowStacked(value: String): Boolean = value.length > STAT_ROW_INLINE_MAX_CHARS
+
+/**
+ * Presupuesto solo de materiales: los gastos generales (10 %) y la utilidad (5 %) son del contratista. Si la persona
+ * compra el material ella misma no corresponden; se activan al contratar la obra.
+ */
+@Composable
+fun ContractorSwitch(checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text("Contrato a alguien para la obra", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Suma gastos generales (10 %) y utilidad (5 %). Si compras tú el material, déjalo apagado.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        androidx.compose.material3.Switch(checked, onChange, Modifier.testTag("contractor_switch"))
     }
 }
 
