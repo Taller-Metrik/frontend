@@ -1,6 +1,10 @@
 package com.metrik.app.ui.navigation
 
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.net.Uri
+import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -13,6 +17,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.metrik.app.AppContainer
+import com.metrik.app.BuildConfig
+import java.io.File
 import com.metrik.app.feature.auth.AuthViewModel
 import com.metrik.app.feature.calibration.CalibrationScreen
 import com.metrik.app.feature.calibration.CalibrationViewModel
@@ -35,6 +41,9 @@ import com.metrik.app.feature.projects.ProjectDetailScreen
 import com.metrik.app.feature.projects.ProjectDetailViewModel
 import com.metrik.app.feature.projects.ProjectsScreen
 import com.metrik.app.feature.projects.ProjectsViewModel
+import com.metrik.app.feature.sensorvalidation.JsonSensorTrialStore
+import com.metrik.app.feature.sensorvalidation.SensorValidationScreen
+import com.metrik.app.feature.sensorvalidation.SensorValidationViewModel
 import com.metrik.app.feature.settings.SettingsScreen
 import com.metrik.app.feature.validation.ValidationScreen
 import com.metrik.app.feature.validation.ValidationViewModel
@@ -51,6 +60,7 @@ object Routes {
     const val VALIDATION = "validation/{localId}"
     const val DASHBOARD = "dashboard/{localId}"
     const val CALIBRATION = "calibration"
+    const val SENSOR_VALIDATION = "sensor-validation"
     const val GPS_REFERENCE = "gps-reference/{localId}"
     fun gpsReference(localId: Long) = "gps-reference/$localId"
 
@@ -86,7 +96,9 @@ fun MetrikNavHost(container: AppContainer) {
                 onBack = { nav.popBackStack() },
             )
         }
-        composable(Routes.SETTINGS) { SettingsScreen(container.session, onBack = { nav.popBackStack() }) }
+        composable(Routes.SETTINGS) {
+            SettingsScreen(container.session, onBack = { nav.popBackStack() }, onCalibration = { nav.navigate(Routes.CALIBRATION) })
+        }
         composable(Routes.PROJECTS) {
             val vm = viewModel { ProjectsViewModel(container.projects, container.surveys, container.auth) }
             ProjectsScreen(
@@ -154,7 +166,24 @@ fun MetrikNavHost(container: AppContainer) {
             val vm = viewModel {
                 CalibrationViewModel(container.session, container.calibrations, stepEvents(context), container.heading.headingDeg, container.location)
             }
-            CalibrationScreen(vm, onBack = { nav.popBackStack() })
+            CalibrationScreen(vm, onBack = { nav.popBackStack() }, onValidateSensors = { nav.navigate(Routes.SENSOR_VALIDATION) })
+        }
+        composable(Routes.SENSOR_VALIDATION) {
+            val vm = viewModel {
+                SensorValidationViewModel(
+                    location = container.location,
+                    steps = stepEvents(context),
+                    heading = container.heading.headingDeg.takeIf { container.heading.available },
+                    store = JsonSensorTrialStore(File(context.filesDir, "sensor_validation_trials.json")),
+                    export = { name, bytes -> saveToDownloads(context, name, bytes, "text/csv") },
+                    device = "${Build.MANUFACTURER} ${Build.MODEL}",
+                    appVersion = BuildConfig.VERSION_NAME,
+                    headingSource = container.heading.sourceName,
+                    stepsAvailable = (context.getSystemService(Context.SENSOR_SERVICE) as SensorManager)
+                        .getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null,
+                )
+            }
+            SensorValidationScreen(vm, onBack = { nav.popBackStack() })
         }
         composable(Routes.GPS_REFERENCE, arguments = listOf(navArgument("localId") { type = NavType.LongType })) { entry ->
             val localId = entry.arguments!!.getLong("localId")

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -39,7 +40,7 @@ private val MODES = listOf(
  * compilar (local.properties -> metrik.api.url).
  */
 @Composable
-fun SettingsScreen(session: SessionStore, onBack: () -> Unit, arSupportedOverride: Boolean? = null) {
+fun SettingsScreen(session: SessionStore, onBack: () -> Unit, arSupportedOverride: Boolean? = null, onCalibration: () -> Unit = {}) {
     val current by session.session.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -69,6 +70,13 @@ fun SettingsScreen(session: SessionStore, onBack: () -> Unit, arSupportedOverrid
                     }
                 }
             }
+            Text("Calibración", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Largo de paso, giroscopio y GPS, y la validación de sensores para el informe técnico.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(onClick = onCalibration, modifier = Modifier.fillMaxWidth().testTag("open_calibration_settings")) { Text("Calibración de sensores") }
         }
     }
 }
