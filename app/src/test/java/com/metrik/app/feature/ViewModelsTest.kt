@@ -135,13 +135,13 @@ class ViewModelsTest {
                     for (i in 0..3) for (k in 0 until 40) {
                         val (x1, y1) = poly[i]
                         val (x2, y2) = poly[(i + 1) % 4]
-                        emit(at(x1 + (x2 - x1) * k / 40, y1 + (y2 - y1) * k / 40, k.toDouble()))
+                        emit(at(x1 + (x2 - x1) * k / 40, y1 + (y2 - y1) * k / 40, 100.0 + i * 40 + k)) // la hora avanza
                     }
                 }
             }
         }
         val repo = FakeSurveyRepository()
-        val vm = GpsViewModel(1, source, repo)
+        val vm = GpsViewModel(1, source, repo, startGate = { com.metrik.app.gps.GpsStartGate.off() })
         vm.calibrate()
         val cal = vm.state.value
         recording = true
@@ -154,6 +154,51 @@ class ViewModelsTest {
         assertEquals(6000.0, vm.state.value.analysis!!.areaM2, 180.0)
         assertEquals(SurveyMode.EXTERIOR, saved.mode)
         assertEquals(500, saved.scaleDenominator)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-42", nombre = "GPS a pie en el ViewModel: quieto no avanza, caminando dibuja cada paso", requisito = "RF-08",
+        objetivo = "Verificar con el ViewModel completo que sin pasos el GPS que pasea no mueve el recorrido y que cada paso con brújula agrega un punto.",
+        entrada = "Calibración de 15 lecturas en el origen; A) 30 lecturas paseando ±3 m sin pasos; B) 10 pasos al norte de 0,70 m sin GPS",
+        esperado = "A) 1 punto (la partida), 0 correcciones; B) 11 puntos, el último a 7,0 m al norte",
+    )
+    fun gpsAPieConPasos() = runBlocking {
+        val lat0 = -8.13
+        val lon0 = -79.04
+        fun at(x: Double, y: Double, t: Double) =
+            GpsSample(lat0 + Math.toDegrees(y / 6_371_000.0), lon0 + Math.toDegrees(x / (6_371_000.0 * cos(Math.toRadians(lat0)))), 4.0, t)
+        var calibrated = false
+        var pasos = 0
+        val source = object : LocationSource {
+            override val samples = flow {
+                if (!calibrated) repeat(15) { emit(at(0.0, 0.0, it.toDouble())) }
+                else repeat(30) { emit(at(3.0 * kotlin.math.sin(it * 0.7), 3.0 * cos(it * 0.4), 20.0 + it)) }
+            }
+        }
+        val brujula = flow { repeat(pasos) { emit(0.0) } } // 0 rad = norte
+        // A) quieto
+        val vmA = GpsViewModel(1, source, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, compassSteps = brujula, stepLengthM = 0.70)
+        vmA.calibrate(); calibrated = true; vmA.startRecording()
+        val quieto = vmA.state.value
+        // B) caminando 10 pasos al norte
+        // La brújula es un sensor en vivo: queda encendida desde la precisión y los pasos llegan al caminar
+        calibrated = false
+        val brujulaEnVivo = kotlinx.coroutines.flow.MutableSharedFlow<Double>(extraBufferCapacity = 100)
+        val vmB = GpsViewModel(1, object : LocationSource {
+            override val samples = flow { if (!calibrated) repeat(15) { emit(at(0.0, 0.0, it.toDouble())) } }
+        }, FakeSurveyRepository(), startGate = { com.metrik.app.gps.GpsStartGate.off() }, compassSteps = brujulaEnVivo, stepLengthM = 0.70)
+        vmB.calibrate(); calibrated = true; vmB.startRecording()
+        repeat(10) { brujulaEnVivo.emit(0.0) }
+        val caminando = vmB.state.value
+        val ultimo = caminando.track.last()
+        ev.obtenido = "A) puntos=${quieto.track.size}, correcciones=${quieto.gpsCorrections}; " +
+            "B) puntos=${caminando.track.size}, último=(${"%.2f".format(ultimo.x)}; ${"%.2f".format(ultimo.y)})"
+        assertEquals(1, quieto.track.size)
+        assertEquals(0, quieto.gpsCorrections)
+        assertEquals(11, caminando.track.size)
+        assertEquals(7.0, ultimo.y, 0.01)
+        assertEquals(0.0, ultimo.x, 0.01)
     }
 
     @Test

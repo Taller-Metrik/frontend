@@ -238,3 +238,57 @@ class StepDetector(
 
     companion object { const val GRAVITY = 9.80665 }
 }
+
+/**
+ * Media circular de rumbos en radianes (sin el salto de ±180°): el balanceo del brazo al caminar da lecturas a
+ * ambos lados del rumbo real y promediarlas a secas cerca del norte daría el sur.
+ */
+fun circularMeanRad(headingsRad: List<Double>): Double {
+    require(headingsRad.isNotEmpty()) { "Se necesita al menos un rumbo" }
+    val x = headingsRad.sumOf { kotlin.math.cos(it) }
+    val y = headingsRad.sumOf { kotlin.math.sin(it) }
+    return kotlin.math.atan2(y, x)
+}
+
+/**
+ * Filtro de pasos por racha. El [StepDetector] cuenta como paso cualquier pico de aceleración, y con el
+ * celular en la mano un gesto (mirar la pantalla, girar la muñeca) ya lo produce: quieto, el recorrido
+ * avanzaba solo. Aquí un paso solo cuenta si forma parte de una racha de [confirmSteps] pasos seguidos,
+ * sin pausas mayores que [maxGapNs] (caminar normal: un paso cada 0,4–0,7 s). Los pasos de la racha se
+ * guardan y se entregan juntos al confirmarla, así una caminata real no pierde sus primeros pasos.
+ */
+class WalkingGate(
+    private val confirmSteps: Int = 3,
+    private val maxGapNs: Long = 1_500_000_000L,
+) {
+    private val pending = mutableListOf<Double>()
+    private var lastNs: Long? = null
+    private var walking = false
+
+    init { require(confirmSteps >= 1) { "confirmSteps debe ser al menos 1" } }
+
+    /** Registra un paso con su rumbo; devuelve los rumbos de los pasos que ya se pueden aplicar (0, 1 o varios). */
+    fun onStep(timestampNs: Long, headingRad: Double): List<Double> {
+        val continues = lastNs?.let { timestampNs - it <= maxGapNs } == true
+        lastNs = timestampNs
+        if (!continues) { walking = false; pending.clear() }
+        if (walking) return listOf(headingRad)
+        pending += headingRad
+        if (pending.size < confirmSteps) return emptyList()
+        walking = true
+        return pending.toList().also { pending.clear() }
+    }
+
+    /** Pasos retenidos (racha sin confirmar todavía). */
+    val pendingCount: Int get() = pending.size
+
+    /**
+     * Entrega ya los pasos retenidos de una racha que no llegó a [confirmSteps]. Se usa al tocar «Esquina»: el toque
+     * confirma que se caminó (un lado de 1–2 m son solo 1–2 pasos tras detenerse en la esquina anterior).
+     */
+    fun flushPending(): List<Double> {
+        if (pending.isEmpty()) return emptyList()
+        walking = true
+        return pending.toList().also { pending.clear() }
+    }
+}

@@ -46,7 +46,7 @@ class AppContainer(context: Context) {
         com.metrik.app.data.repository.DefaultCalibrationRepository(api)
     }
 
-    val location: LocationSource by lazy { FusedLocationSource(app) }
+    val location: LocationSource by lazy { FusedLocationSource(app, scope) }
     val heading: HeadingSensor by lazy { HeadingSensor(app) }
 
     /** Solo pruebas E2E: reemplaza el odómetro físico. En la app real siempre es null. */

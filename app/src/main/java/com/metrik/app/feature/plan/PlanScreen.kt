@@ -110,6 +110,11 @@ fun PlanScreen(
                 }
             }
 
+            if (survey.mode == SurveyMode.EXTERIOR) {
+                Spacer(Modifier.height(12.dp))
+                ReferenceMapCard(a.vertices)
+            }
+
             Spacer(Modifier.height(8.dp))
             Text("Muros", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             val paper = vm.paperMm()

@@ -33,6 +33,8 @@ fun PlanDrawing(
     corners: List<Point> = emptyList(),
     polygon: List<Point> = emptyList(),
     current: Point? = null,
+    /** Punto de partida fijo (verde, «Inicio») mientras se recorre. */
+    start: Point? = null,
     showDimensions: Boolean = true,
     numberWalls: Boolean = false, // "M1 · 6.00 m" y punto verde en la esquina de inicio (validación con wincha)
 ) {
@@ -40,7 +42,7 @@ fun PlanDrawing(
     val labelColor = MaterialTheme.colorScheme.onSurface
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     Canvas(modifier.fillMaxSize().testTag("plan_drawing")) {
-        val all = track + corners + polygon + listOfNotNull(current)
+        val all = track + corners + polygon + listOfNotNull(current, start)
         if (all.isEmpty()) return@Canvas
         val pad = 110f // margen para que las cotas de los muros laterales no se corten
         val minX = all.minOf { it.x }
@@ -88,6 +90,12 @@ fun PlanDrawing(
 
         if (numberWalls && polygon.isNotEmpty()) drawCircle(MetrikColors.Ok, radius = 12f, center = map(polygon[0]))
         corners.forEach { drawCircle(MetrikColors.Corner, radius = 9f, center = map(it)) }
+        start?.let {
+            drawCircle(MetrikColors.Ok, radius = 13f, center = map(it))
+            drawCircle(MetrikColors.Petrol, radius = 13f, center = map(it), style = Stroke(3f))
+            val label = measurer.measure("Inicio", TextStyle(fontSize = 11.sp, color = labelColor))
+            drawText(label, topLeft = map(it) + Offset(16f, -label.size.height / 2f))
+        }
         current?.let {
             drawCircle(MetrikColors.Amber, radius = 14f, center = map(it))
             drawCircle(MetrikColors.Petrol, radius = 14f, center = map(it), style = Stroke(3f))

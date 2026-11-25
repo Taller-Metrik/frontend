@@ -150,7 +150,7 @@ class CalibrationViewModel(
 private fun f(v: Double, unit: String) = String.format(Locale.US, "%.2f %s", v, unit)
 
 @Composable
-fun CalibrationScreen(vm: CalibrationViewModel, onBack: () -> Unit) {
+fun CalibrationScreen(vm: CalibrationViewModel, onBack: () -> Unit, onValidateSensors: () -> Unit = {}) {
     val s by vm.state.collectAsStateWithLifecycle()
     Scaffold(topBar = { MetrikTopBar("Calibrar sensores", onBack = onBack) }) { padding ->
         Column(
@@ -197,6 +197,10 @@ fun CalibrationScreen(vm: CalibrationViewModel, onBack: () -> Unit) {
                     Text(if (it.needsCalibration) "⚠ Señal débil: busca un lugar más abierto" else "✔ GPS listo para medir terrenos",
                         style = MaterialTheme.typography.bodySmall)
                 }
+            }
+
+            CalCard("4. Validación de sensores", "Ensayos con referencia conocida (GPS, pasos y giro) para medir el error y exportar los datos al informe técnico.") {
+                Button(onClick = onValidateSensors, modifier = Modifier.fillMaxWidth().testTag("cal_validate_sensors")) { Text("Validación de sensores") }
             }
         }
     }

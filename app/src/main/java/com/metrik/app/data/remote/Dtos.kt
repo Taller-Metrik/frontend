@@ -27,6 +27,9 @@ data class GpsPointDto(
     val lon: Double,
     @SerialName("accuracy_m") val accuracyM: Double,
     @SerialName("timestamp_s") val timestampS: Double? = null,
+    val satellites: Int? = null,
+    @SerialName("cn0_dbhz") val cn0DbHz: Double? = null,
+    @SerialName("vertex_id") val vertexId: Int? = null,
 )
 
 @Serializable

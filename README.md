@@ -95,7 +95,7 @@ Para conectar el celular por USB:
 |------|------|
 | **Interior · ARCore** | Ver la sección siguiente. |
 | **Interior · Pasos** | Camina pegado a las paredes con el celular al frente; toca **Esquina** en cada esquina. La distancia es pasos × largo de paso calibrado y el giro viene del giroscopio. Menos preciso. |
-| **Exterior · GPS** | Mide la precisión quieto (calibración), recorre el borde del terreno y finaliza. Filtra lecturas según el transporte: caminata (≤ 11 km/h, precisión ≤ 10 m), bici (≤ 43 km/h, ≤ 12 m), moto (≤ 108 km/h, ≤ 15 m) y carro (≤ 144 km/h, ≤ 15 m). |
+| **Exterior · GPS** | Quédate quieto **en el punto de partida** para la calibración (15 lecturas): su promedio ponderado por precisión es el inicio del recorrido. Recorre el borde del terreno y finaliza. **A pie usa pasos + brújula** (`compassSteps` + `PdrGpsFusion`): cada paso agrega un punto en la dirección de la brújula (norte real, `TYPE_ROTATION_VECTOR`) y el GPS ajusta la figura entera por mínimos cuadrados (escala, giro y ubicación), corrigiendo el largo de paso y el desvío de la brújula sin redondear esquinas. Quieto no hay pasos y el GPS se ignora. En bici, moto o carro se usa solo el GPS: Si una lectura rebotada en un edificio quedó como ancla, 3 lecturas precisas y coherentes la reemplazan (`GpsTrackFilter`). Quieto, el GPS "pasea" varios metros: a pie no se agregan puntos si el acelerómetro no detecta pasos en 3 s, y en cualquier transporte un punto nuevo debe estar a más de 3 m y más lejos que la precisión de la lectura. Filtra lecturas según el transporte: caminata (≤ 11 km/h, precisión ≤ 10 m), bici (≤ 43 km/h, ≤ 12 m), moto (≤ 108 km/h, ≤ 15 m) y carro (≤ 144 km/h, ≤ 15 m). |
 
 Después de medir: **plano a escala** (1:20 a 1:2000) con cotas, distancia Euclidiana y
 Manhattan entre vértices, **exportar DXF** (Descargas/MetriK), **análisis ML** y
@@ -205,8 +205,13 @@ Pruebas del odómetro y la cámara (`SensorsTest.kt`):
 | FU-35 | Cortes breves del seguimiento no traban la calibración |
 | FU-36 | Piso estimado en superficies sin textura |
 | FU-37 | Tras un salto de la mira se sigue midiendo |
+| FU-38 | GPS: se recupera de un ancla falsa (rebote de señal) |
+| FU-39 | GPS: punto de partida desde la calibración |
+| FU-40 | GPS: quieto no avanza aunque la señal pasee |
+| FU-41 | GPS a pie: pasos + brújula corregidos con GPS |
+| FU-42 | GPS a pie en el ViewModel: quieto no avanza, caminando dibuja cada paso (`ViewModelsTest.kt`) |
 
-En total: FU-01 a FU-37 (unitarias), FI-01 a FI-10 (integración), FC-01 a FC-05 (caja negra) y
+En total: FU-01 a FU-42 (unitarias), FI-01 a FI-10 (integración), FC-01 a FC-05 (caja negra) y
 FE-01 a FE-03 (end-to-end).
 <!-- /AUTO-GENERATED -->
 

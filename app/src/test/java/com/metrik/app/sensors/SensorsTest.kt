@@ -3,6 +3,8 @@ package com.metrik.app.sensors
 import com.metrik.app.core.geometry.Point
 import com.metrik.app.domain.GpsSample
 import com.metrik.app.gps.GpsMath
+import com.metrik.app.gps.GpsTrackFilter
+import com.metrik.app.gps.PdrGpsFusion
 import com.metrik.app.testing.EvidenceRule
 import com.metrik.app.testing.Evidencia
 import org.junit.Assert.assertEquals
@@ -325,6 +327,107 @@ class SensorsTest {
         ev.obtenido = "total=${o.totalM} m, saltos=${o.jumps}"
         assertEquals(2.0, o.totalM, 0.06)
         assertEquals(1, o.jumps)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-38", nombre = "GPS: se recupera de un ancla falsa (rebote de señal)", requisito = "RF-08",
+        objetivo = "Verificar que si la primera lectura aceptada era un rebote, las lecturas buenas siguientes no quedan bloqueadas como 'salto imposible'.",
+        entrada = "Ancla falsa a 40 m; luego 8 lecturas reales cada 1 s caminando 1,3 m/s desde el origen (precisión 4 m)",
+        esperado = "Las 2 primeras quedan en espera; a la 3.ª se aceptan las 3; después solo al avanzar ≥ 4 m (la precisión)",
+    )
+    fun gpsAnclaFalsa() {
+        val lat0 = -8.13
+        val lon0 = -79.04
+        fun at(x: Double, t: Double, acc: Double = 4.0) =
+            GpsSample(lat0, lon0 + Math.toDegrees(x / (6_371_000.0 * cos(Math.toRadians(lat0)))), acc, t)
+        val f = GpsTrackFilter(com.metrik.app.gps.Transport.of("walk"))
+        val primera = f.offer(at(40.0, 0.0)) // rebote aceptado (no hay ancla todavía)
+        val tamanos = (1..8).map { f.offer(at((it - 1) * 1.3, it.toDouble())).size }
+        ev.obtenido = "primera=${primera.size}, luego=$tamanos"
+        assertEquals(1, primera.size)
+        assertEquals(listOf(0, 0, 3, 0, 0, 0, 1, 0), tamanos)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-40", nombre = "GPS: quieto no avanza aunque la señal pasee", requisito = "RF-08",
+        objetivo = "Verificar que, quieto, las lecturas que 'pasean' varios metros no agregan recorrido: a pie por falta de pasos y en vehículo por el avance mínimo.",
+        entrada = "Partida en el origen; 60 lecturas (1 por s) paseando hasta 2,5 m del origen con precisión 5 m",
+        esperado = "0 puntos agregados a pie sin pasos y 0 en carro (el paseo no supera la precisión de 5 m)",
+    )
+    fun gpsQuietoNoAvanza() {
+        val lat0 = -8.13
+        val lon0 = -79.04
+        val m = 1.0 / 6_371_000.0
+        fun at(x: Double, y: Double, t: Double) =
+            GpsSample(lat0 + Math.toDegrees(y * m), lon0 + Math.toDegrees(x * m / cos(Math.toRadians(lat0))), 5.0, t)
+        val inicio = GpsSample(lat0, lon0, 3.0, 0.0)
+        val aPie = GpsTrackFilter(com.metrik.app.gps.Transport.of("walk")).apply { seed(inicio) }
+        val carro = GpsTrackFilter(com.metrik.app.gps.Transport.of("car")).apply { seed(inicio) }
+        var agregadosAPie = 0
+        var agregadosCarro = 0
+        for (i in 1..60) {
+            val s = at(2.5 * sin(i * 0.37), 2.5 * cos(i * 0.23), i.toDouble())
+            agregadosAPie += aPie.offer(s, moving = false).size
+            agregadosCarro += carro.offer(s).size
+        }
+        ev.obtenido = "a pie=$agregadosAPie, carro=$agregadosCarro"
+        assertEquals(0, agregadosAPie)
+        assertEquals(0, agregadosCarro)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-39", nombre = "GPS: punto de partida desde la calibración", requisito = "RF-08",
+        objetivo = "Verificar que el punto de partida es el promedio ponderado por precisión de las lecturas quietas y que una lectura imprecisa pesa poco.",
+        entrada = "14 lecturas en el origen con precisión 3 m y 1 lectura a 30 m con precisión 20 m",
+        esperado = "Partida a menos de 0,2 m del origen; precisión 3 m",
+    )
+    fun gpsPuntoDePartida() {
+        val lat0 = -8.13
+        val lon0 = -79.04
+        val buenas = (0 until 14).map { GpsSample(lat0, lon0, 3.0, it.toDouble()) }
+        val mala = GpsSample(lat0 + Math.toDegrees(30.0 / 6_371_000.0), lon0, 20.0, 14.0)
+        val p = GpsMath.startPoint(buenas + mala)!!
+        val d = GpsMath.haversine(lat0, lon0, p.lat, p.lon)
+        ev.obtenido = "distancia al origen=${"%.3f".format(d)} m, precisión=${p.accuracyM} m"
+        assertTrue(d < 0.2)
+        assertEquals(3.0, p.accuracyM, 0.0)
+    }
+
+    @Test
+    @Evidencia(
+        id = "FU-41", nombre = "GPS a pie: pasos + brújula corregidos con GPS", requisito = "RF-08",
+        objetivo = "Verificar que la combinación sigue la caminata con línea continua y que el GPS corrige los errores de los pasos (largo de paso y brújula).",
+        entrada = "Cuadrado de 21×21 m (30 pasos por lado); largo real 0,77 m pero calibrado 0,70 m (−9 %); brújula desviada 8°; GPS cada 2 pasos con ruido de 4 m (precisión 5 m)",
+        esperado = "Partida + un punto por paso (121); error de área menor que solo con pasos y menor al 10 %",
+    )
+    fun gpsPasosYBrujula() {
+        val rng = java.util.Random(11)
+        val realStep = 0.77
+        val fusion = PdrGpsFusion(stepLengthM = 0.70, startAccuracyM = 3.0)
+        val soloPasos = PdrGpsFusion(stepLengthM = 0.70, startAccuracyM = 3.0)
+        val sesgo = Math.toRadians(8.0)
+        var real = Point(0.0, 0.0)
+        val rumbos = listOf(0.0, Math.PI / 2, Math.PI, 3 * Math.PI / 2) // norte, este, sur, oeste
+        var paso = 0
+        for (r in rumbos) repeat(30) {
+            real = Point(real.x + realStep * sin(r), real.y + realStep * cos(r))
+            fusion.onStep(r + sesgo); soloPasos.onStep(r + sesgo)
+            if (++paso % 2 == 0) fusion.onGps(Point(real.x + rng.nextGaussian() * 4, real.y + rng.nextGaussian() * 4), 5.0)
+        }
+        val trazo = fusion.track()
+        val trazoPasos = soloPasos.track()
+        fun area(p: List<Point>) = kotlin.math.abs(p.indices.sumOf { i -> val a = p[i]; val b = p[(i + 1) % p.size]; a.x * b.y - b.x * a.y }) / 2
+        val real2 = (30 * realStep) * (30 * realStep)
+        val errFusion = kotlin.math.abs(area(trazo) - real2) / real2
+        val errPasos = kotlin.math.abs(area(trazoPasos) - real2) / real2
+        ev.obtenido = "puntos=${trazo.size}, área real=${"%.1f".format(real2)} m², combinada=${"%.1f".format(area(trazo))} m² " +
+            "(${"%.1f".format(errFusion * 100)} %), solo pasos=${"%.1f".format(area(trazoPasos))} m² (${"%.1f".format(errPasos * 100)} %)"
+        assertEquals(121, trazo.size) // partida + un punto por paso
+        assertTrue(errFusion < errPasos)
+        assertTrue(errFusion < 0.10)
     }
 
     @Test
