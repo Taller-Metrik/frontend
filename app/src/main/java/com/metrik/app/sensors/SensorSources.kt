@@ -25,6 +25,14 @@ class HeadingSensor(context: Context) {
 
     val available: Boolean get() = sensor != null
 
+    /** Sensor de orientación que se está usando (se registra en los ensayos de validación). */
+    val sourceName: String
+        get() = when (sensor?.type) {
+            Sensor.TYPE_GAME_ROTATION_VECTOR -> "TYPE_GAME_ROTATION_VECTOR (giroscopio + acelerómetro, sin magnetómetro)"
+            Sensor.TYPE_ROTATION_VECTOR -> "TYPE_ROTATION_VECTOR (con magnetómetro)"
+            else -> "no disponible"
+        }
+
     val headingDeg: Flow<Double> = callbackFlow {
         val s = sensor ?: run { close(); return@callbackFlow }
         val rotation = FloatArray(9)

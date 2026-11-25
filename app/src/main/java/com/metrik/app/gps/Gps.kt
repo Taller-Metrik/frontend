@@ -60,8 +60,8 @@ class FusedLocationSource(context: Context, scope: CoroutineScope, keepAliveMs: 
             }
         }
         // Solo ubicaciones nuevas: sin la última guardada (puede ser de minutos atrás) y esperando la primera precisa
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
-            .setMinUpdateIntervalMillis(500L)
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, INTERVAL_MS)
+            .setMinUpdateIntervalMillis(MIN_INTERVAL_MS)
             .setMaxUpdateAgeMillis(0L)
             .setWaitForAccurateLocation(true)
             .build()
@@ -96,12 +96,21 @@ class FusedLocationSource(context: Context, scope: CoroutineScope, keepAliveMs: 
         }
     }
 
-    private companion object {
-        const val GNSS_STATUS_MAX_AGE_MS = 5_000L
+    companion object {
+        private const val GNSS_STATUS_MAX_AGE_MS = 5_000L
         /** El GPS sigue encendido 3 min sin recolectores (pantalla «Recorrer» tras medir la precisión). */
-        const val KEEP_ALIVE_MS = 180_000L
+        private const val KEEP_ALIVE_MS = 180_000L
         /** Antigüedad máxima de una lectura al llegar (2 s). */
-        const val MAX_FIX_AGE_NS = 2_000_000_000L
+        private const val MAX_FIX_AGE_NS = 2_000_000_000L
+        private const val INTERVAL_MS = 1000L
+        private const val MIN_INTERVAL_MS = 500L
+
+        /** Configuración del proveedor, para registrarla en los ensayos de validación y poder interpretarlos. */
+        const val CONFIG_DESCRIPTION =
+            "FusedLocationProvider; PRIORITY_HIGH_ACCURACY; intervalo=1000 ms; intervalo_min=500 ms; " +
+                "max_edad_ubicacion_cache=0 ms; esperar_ubicacion_precisa=true; " +
+                "el proveedor descarta lecturas con mas de 2000 ms de antiguedad; " +
+                "sin filtro de precision ni de movimiento (GpsTrackFilter no aplicado)"
     }
 }
 
